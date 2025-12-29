@@ -2,7 +2,7 @@
   "name": "tank-onlline",
   "version": "1.0.0",
   "description": "",
-  "main": "scrip.js",
+  "main": "server.js",
   "engines": {
     "node": ">=16.0.0"
   },
