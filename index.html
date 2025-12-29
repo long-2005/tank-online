@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Tank War</title>
+  <style>
+    body { margin: 0; background: #1a1a1a; color: white; font-family: 'Segoe UI', sans-serif; overflow: hidden; display: flex; justify-content: center; align-items: center; height: 100vh; }
+    #ui-layer { position: absolute; width: 100%; height: 100%; background: rgba(0,0,0,0.9); display: flex; justify-content: center; align-items: center; z-index: 10; }
+    .panel { background: #2c3e50; padding: 25px; border-radius: 12px; text-align: center; width: 550px; box-shadow: 0 0 30px #000; border: 1px solid #34495e;}
+    #shop-container { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; max-height: 400px; overflow-y: auto; margin: 20px 0; padding-right: 5px; }
+    .skin-card { border: 2px solid #555; padding: 10px; cursor: pointer; border-radius: 8px; background: #34495e; display: flex; flex-direction: column; align-items: center; }
+    .skin-card.selected { border-color: #2ecc71; background: #223a2f; }
+    .skin-card img { width: 70px; margin-bottom: 5px; }
+    .stats-box { font-size: 0.8em; color: #bdc3c7; width: 100%; background: rgba(0,0,0,0.2); padding: 5px; border-radius: 4px; box-sizing: border-box; margin-top: 5px;}
+    .stat-row { display: flex; justify-content: space-between; }
+    .val-high { color: #e74c3c; font-weight: bold; } 
+    .val-mid { color: #f1c40f; font-weight: bold; } 
+    .val-good { color: #2ecc71; font-weight: bold; } 
+    input { padding: 12px; width: 80%; margin-bottom: 15px; border-radius: 4px; border: none; }
+    button { padding: 12px; width: 100%; background: #e67e22; border: none; color: white; font-weight: bold; cursor: pointer; border-radius: 4px; font-size: 16px;}
+    
+    #hud { position: absolute; width: 100%; height: 100%; pointer-events: none; display: none;}
+    #money-display { position: absolute; top: 15px; left: 15px; font-size: 24px; font-weight: bold; text-shadow: 2px 2px 4px black; color: #f1c40f; pointer-events: auto;}
+    
+    #btn-quit {
+        position: absolute; top: 15px; right: 15px;
+        width: 40px; height: 40px;
+        background: #e74c3c; color: white; border: none;
+        border-radius: 8px; font-size: 20px; font-weight: bold;
+        cursor: pointer; pointer-events: auto; padding: 0;
+        box-shadow: 0 4px 0 #c0392b; /* 3D effect shadow */
+        transition: all 0.1s;
+    }
+    #btn-quit:active {
+        box-shadow: 0 0 0 #c0392b;
+        transform: translateY(4px);
+    }
+
+    /* Custom Scrollbar */
+    ::-webkit-scrollbar { width: 8px; }
+    ::-webkit-scrollbar-track { background: #2c3e50; }
+    ::-webkit-scrollbar-thumb { background: #7f8c8d; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: #95a5a6; }
+
+    canvas { background: #34495e; border: 3px solid #555; box-shadow: 0 0 50px black; }
+  </style>
+  <script src="/socket.io/socket.io.js"></script>
+</head>
+<body>
+
+    <div id="hud">
+        <div id="money-display">💰 <span id="game-money">0</span> $</div>
+        <button id="btn-quit" onclick="leaveGame()">✕</button>
+    </div>
+
+    <div id="ui-layer">
+        <div id="login-screen" class="panel">
+            <h1 style="color:#e67e22">TANK BATTLEFIELD</h1>
+            <p>Sẵn sàng chiến đấu?</p>
+            <input type="text" id="username" placeholder="Tên đăng nhập...">
+            <input type="password" id="password" placeholder="Mật khẩu..." style="margin-top:-10px;">
+            <div style="display:flex; gap:10px;">
+                <button onclick="login()" style="background:#e67e22">ĐĂNG NHẬP</button>
+                <button onclick="register()" style="background:#2ecc71">ĐĂNG KÝ</button>
+            </div>
+        </div>
+
+        <div id="menu-screen" class="panel" style="display:none;">
+            <h2>GARAGE</h2>
+            <p>Tài sản: <span id="user-money" style="color:#f1c40f; font-size: 1.4em;">0</span> $</p>
+            <div id="shop-container"></div>
+            <button onclick="playGame()" style="background:#27ae60; margin-top: 10px;">VÀO TRẬN ĐẤU</button>
+        </div>
+    </div>
+
+    <canvas id="canvas"></canvas>
+
+    <script>
+        var socket = io();
+        var canvas = document.getElementById('canvas');
+        canvas.width = 800; canvas.height = 600;
+        var ctx = canvas.getContext('2d');
+
+        const SKIN_LIST = ['tank', 'tank1', 'tank2', 'tank3', 'tank4', 'tank5'];
+        const skinImages = {};
+        SKIN_LIST.forEach(name => {
+            skinImages[name] = new Image();
+            skinImages[name].src = `/images/${name}.png`;
+        });
+        
+        const wallImg = new Image(); wallImg.src = '/images/wall.png';
+        const bgImg = new Image(); bgImg.src = '/images/bg.jpg';
+
+        let myUser = null;
+        let tankConfig = {};
+        let mapData = [];
+        let TILE_SIZE = 25; // Sẽ được cập nhật từ server
+
+        function login() {
+            let u = document.getElementById('username').value;
+            let p = document.getElementById('password').value;
+            if(u && p) socket.emit('login', { username: u, password: p });
+            else alert("Vui lòng nhập tên và mật khẩu!");
+        }
+
+        function register() {
+            let u = document.getElementById('username').value;
+            let p = document.getElementById('password').value;
+            if(u && p) socket.emit('register', { username: u, password: p });
+            else alert("Vui lòng nhập tên và mật khẩu!");
+        }
+
+        socket.on('login_error', (msg) => alert(msg));
+        socket.on('register_error', (msg) => alert(msg));
+        socket.on('register_success', (msg) => alert(msg));
+
+        socket.on('login_success', (data) => {
+            myUser = data.user;
+            tankConfig = data.config;
+            mapData = data.map;
+            TILE_SIZE = data.tileSize || 25; // Cập nhật size tường
+            renderShop();
+            document.getElementById('login-screen').style.display = 'none';
+            document.getElementById('menu-screen').style.display = 'block';
+        });
+
+        socket.on('update_user_data', (user) => {
+            myUser = user;
+            document.getElementById('user-money').innerText = user.money;
+            document.getElementById('game-money').innerText = user.money;
+            renderShop();
+        });
+
+        function renderShop() {
+            const container = document.getElementById('shop-container');
+            container.innerHTML = '';
+            SKIN_LIST.forEach(skinName => {
+                let info = tankConfig[skinName];
+                if (!info) return;
+                let owned = myUser.skins.includes(skinName);
+                let isSelected = (myUser.currentSkin === skinName);
+                
+                let card = document.createElement('div');
+                card.className = `skin-card ${isSelected ? 'selected' : ''}`;
+                card.innerHTML = `
+                    <div style="font-weight:bold; margin-bottom:5px; color:#fff">${info.name}</div>
+                    <img src="/images/${skinName}.png" onerror="this.src='https://via.placeholder.com/64'">
+                    <div class="stats-box">
+                        <div class="stat-row"><span>⚔️ Damage:</span> <span class="val-high">${info.damage}</span></div>
+                        <div class="stat-row"><span>🛡️ HP:</span> <span class="val-good">${info.hp}</span></div>
+                    </div>
+                    <div style="color:${owned ? "#2ecc71" : "#e74c3c"}; font-weight:bold; margin-top:5px;">
+                        ${owned ? (isSelected ? "ĐANG DÙNG" : "ĐÃ CÓ") : `GIÁ: ${info.price}$`}
+                    </div>
+                `;
+                card.onclick = () => {
+                    if (owned) socket.emit('select_skin', skinName);
+                    else if (myUser.money >= info.price && confirm(`Mua ${info.name}?`)) socket.emit('buy_skin', skinName);
+                };
+                container.appendChild(card);
+            });
+        }
+
+        function playGame() {
+            document.getElementById('ui-layer').style.display = 'none';
+            document.getElementById('hud').style.display = 'block';
+            socket.emit('join_game');
+            isPlaying = true;
+        }
+
+        function leaveGame() {
+            isPlaying = false;
+            socket.emit('leave_game');
+            document.getElementById('hud').style.display = 'none';
+            document.getElementById('ui-layer').style.display = 'flex';
+            document.getElementById('menu-screen').style.display = 'block';
+        }
+
+        let isPlaying = false;
+        let move = { up:0, down:0, left:0, right:0 };
+        window.onkeydown = (e) => {
+            if(!isPlaying) return;
+            if(e.key.toLowerCase()==='w') move.up=1; 
+            if(e.key.toLowerCase()==='s') move.down=1;
+            if(e.key.toLowerCase()==='a') move.left=1; 
+            if(e.key.toLowerCase()==='d') move.right=1;
+            if(e.code==='Space') socket.emit('shoot');
+        };
+        window.onkeyup = (e) => {
+            if(e.key.toLowerCase()==='w') move.up=0; 
+            if(e.key.toLowerCase()==='s') move.down=0;
+            if(e.key.toLowerCase()==='a') move.left=0; 
+            if(e.key.toLowerCase()==='d') move.right=0;
+        };
+        setInterval(() => { if(isPlaying) socket.emit('movement', move); }, 1000/60);
+
+        socket.on('state', (data) => {
+            if(!isPlaying) return;
+            ctx.clearRect(0,0,800,600);
+
+            if (bgImg.complete && bgImg.naturalWidth !== 0) ctx.drawImage(bgImg, 0, 0, 800, 600);
+            
+            // Vẽ tường (Với kích thước mới)
+            if (mapData && mapData.length > 0) {
+                for (let r = 0; r < mapData.length; r++) {
+                    for (let c = 0; c < mapData[r].length; c++) {
+                        if (mapData[r][c] === 1) {
+                            if (wallImg.complete && wallImg.naturalWidth !== 0) 
+                                ctx.drawImage(wallImg, c*TILE_SIZE, r*TILE_SIZE, TILE_SIZE, TILE_SIZE);
+                            else {
+                                ctx.fillStyle = '#7f8c8d'; ctx.fillRect(c*TILE_SIZE, r*TILE_SIZE, TILE_SIZE, TILE_SIZE);
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Vẽ Tank
+            for(let id in data.players) {
+                let p = data.players[id];
+                ctx.save();
+                ctx.translate(p.x, p.y);
+                ctx.rotate(p.angle);
+                
+                let img = skinImages[p.skin] || skinImages['tank'];
+                
+                if (img && img.complete && img.naturalWidth !== 0) {
+                    // Tính toán tỷ lệ khung hình để không bị méo ảnh
+                    let ratio = img.naturalWidth / img.naturalHeight;
+                    let drawW = 64;
+                    let drawH = 64;
+
+                    if (ratio > 1) {
+                        // Ảnh ngang (Rộng hơn cao) -> Set Width=64, Height tự tính
+                        drawH = 64 / ratio;
+                    } else {
+                        // Ảnh dọc (Cao hơn rộng) -> Set Height=64, Width tự tính
+                        drawW = 64 * ratio;
+                    }
+                    
+                    // Vẽ ảnh căn giữa
+                    ctx.drawImage(img, -drawW/2, -drawH/2, drawW, drawH);
+                } else {
+                    ctx.fillStyle = 'blue'; ctx.fillRect(-20, -20, 40, 40);
+                    ctx.fillStyle = 'black'; ctx.fillRect(0, -5, 30, 10);
+                }
+                ctx.restore();
+
+                ctx.fillStyle = 'white'; ctx.font='10px Arial'; ctx.fillText(p.username, p.x-20, p.y-40);
+                let maxHp = p.maxHp || 100;
+                ctx.fillStyle = 'red'; ctx.fillRect(p.x-32, p.y-35, 64, 5);
+                ctx.fillStyle = '#0f0'; ctx.fillRect(p.x-32, p.y-35, (p.hp/maxHp)*64, 5);
+
+                if (id === socket.id) {
+                    let timeSinceShot = data.serverTime - p.lastShotTime;
+                    let reloadPercent = timeSinceShot / p.reloadTime;
+                    if (reloadPercent > 1) reloadPercent = 1;
+                    ctx.fillStyle = '#555'; ctx.fillRect(p.x-32, p.y-28, 64, 3);
+                    ctx.fillStyle = 'yellow'; ctx.fillRect(p.x-32, p.y-28, reloadPercent*64, 3);
+                }
+            }
+            
+            ctx.fillStyle = '#ff0';
+            data.bullets.forEach(b => {
+                ctx.beginPath(); ctx.arc(b.x, b.y, 5, 0, Math.PI*2); ctx.fill();
+            });
+        });
+    </script>
+</body>
+</html>
