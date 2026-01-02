@@ -171,15 +171,17 @@
             if (data) alert(data.message);
         }
         
+        // --- BIẾN TOÀN CỤC CHO GAME LOOP ---
+        let latestServerData = null; // Chứa dữ liệu mới nhất từ Server gửi về (24 lần/giây)
+        let animationId = null;      // ID của vòng lặp vẽ (để dừng khi thoát)
+
+        // --- KẾT NỐI SOCKET ---
         function connectGameSocket(url) {
             console.log("Connecting to Game Server:", url);
             socket = io(url);
             
             socket.on('connect', () => {
                 console.log("Connected to Game Socket!");
-                // Map Data Rendering - In this architecture, maybe request map?
-                // For now, let's hardcode the fixed map rendering or wait for update.
-                // Assuming Fixed Map for now to save time refactoring map sync.
             });
             
             socket.on('kill_reward', (amount) => {
@@ -187,9 +189,11 @@
                  updateMoneyUI();
             });
 
+            // NHẬN DỮ LIỆU TỪ SERVER
+            // Server gửi 24 FPS -> Lưu vào biến tạm, không vẽ ngay
             socket.on('state', (data) => {
                if(!isPlaying) return;
-               renderGame(data);
+               latestServerData = data; // Cập nhật dữ liệu mới nhất
             });
         }
         
@@ -251,11 +255,15 @@
             document.getElementById('ui-layer').style.display = 'none';
             document.getElementById('hud').style.display = 'block';
             if(socket) socket.emit('join_game', { username: myUser.username, skin: myUser.currentSkin });
+            
+            // BẮT ĐẦU VÒNG LẶP VẼ (60 FPS)
             isPlaying = true;
+            gameLoop(); 
         }
 
         function leaveGame() {
             isPlaying = false;
+            cancelAnimationFrame(animationId); // Dừng vẽ để tiết kiệm pin/CPU
             // if(socket) socket.emit('leave_game'); // Optional
             document.getElementById('hud').style.display = 'none';
             document.getElementById('ui-layer').style.display = 'flex';
@@ -278,22 +286,32 @@
             if(e.key.toLowerCase()==='a') move.left=0; 
             if(e.key.toLowerCase()==='d') move.right=0;
         };
+        // Gửi input lên Server (Vẫn giữ 60 lần/giây để phản hồi nhanh)
         setInterval(() => { if(isPlaying && socket) socket.emit('movement', move); }, 1000/60);
 
-        function renderGame(data) {
-            ctx.clearRect(0,0,800,600);
+        // --- HÀM VẼ (RENDER LOOP) ---
+        // Tại sao dùng requestAnimationFrame?
+        // 1. Nó đồng bộ với tần số quét màn hình (thường là 60Hz), giúp hình ảnh mượt nhất.
+        // 2. Tự động dừng khi người dùng chuyển tab (tiết kiệm hiệu năng).
+        function gameLoop() {
+            if (!isPlaying) return;
+            
+            updateAndDraw(); // Hàm vẽ chính
+            
+            animationId = requestAnimationFrame(gameLoop); // Lặp lại liên tục
+        }
 
+        // --- CẤU TRÚC LƯU TRỮ XE TĂNG CLIENT ---
+        // Dùng để lưu vị trí hiện tại phục vụ cho việc làm mượt (Interpolation)
+        let clientTanks = {}; 
+
+        function updateAndDraw() {
+            ctx.clearRect(0,0,800,600); // Xóa màn hình cũ
+
+            // 1. VẼ NỀN (BACKGROUND)
             if (bgImg.complete && bgImg.naturalWidth !== 0) ctx.drawImage(bgImg, 0, 0, 800, 600);
             
-            // Vẽ tường (Với kích thước mới)
-            // Vẽ tường (Với kích thước mới)
-            // HARDCODED MAP DATA FOR NOW or use Client MAP
-            // Reusing MAP generation logic logic client side would be better but for now let's assume empty checking
-            // Actually, let's just generate the fixed map here or rely on what we have. 
-            // Since we removed 'mapData' init from socket login, let's create a local function to generate it.
-            // Map is generated globally now
-
-
+            // 2. VẼ TƯỜNG (OBSTACLES)
             if (mapData && mapData.length > 0) {
                 for (let r = 0; r < mapData.length; r++) {
                     for (let c = 0; c < mapData[r].length; c++) {
@@ -308,41 +326,46 @@
                 }
             }
             
-            // Vẽ Tank
-            for(let id in data.players) {
-                let p = data.players[id];
-                
-                // Interpolation logic (Làm mượt chuyển động)
-                // Vì server chỉ gửi 24 lần/giây, nên client cần tự tính toán vị trí trung gian
-                // để hình ảnh di chuyển mượt mà 60 FPS.
-                if (!p.currentX) p.currentX = p.x;
-                if (!p.currentY) p.currentY = p.y;
-                
-                // Di chuyển vị trí hiển thị (current) từ từ về vị trí server gửi (p.x) với hệ số 0.3
-                p.currentX = p.currentX + (p.x - p.currentX) * 0.3; 
-                p.currentY = p.currentY + (p.y - p.currentY) * 0.3;
+            // Nếu chưa có dữ liệu từ server thì không vẽ tank/đạn
+            if (!latestServerData) return;
 
-                ctx.save();
-                ctx.translate(p.currentX, p.currentY);
-                ctx.rotate(p.angle);
+            // 3. VẼ & LÀM MƯỢT XE TĂNG (PLAYERS)
+            for(let id in latestServerData.players) {
+                let pServer = latestServerData.players[id];
                 
-                let img = skinImages[p.skin] || skinImages['tank'];
+                // --- KỸ THUẬT LÀM MƯỢT (INTERPOLATION) ---
+                // Nếu đây là lần đầu thấy tank này, khởi tạo vị trí ngay lập tức
+                if (!clientTanks[id]) {
+                    clientTanks[id] = { x: pServer.x, y: pServer.y, angle: pServer.angle };
+                }
+
+                let pClient = clientTanks[id];
+                
+                // Lerp (Linear Interpolation): Di chuyển từ từ vị trí hiện tại về vị trí Server gửi
+                // Công thức: Mới = Cũ + (Đích - Cũ) * Hệ số (0.1 -> 0.3)
+                // Hệ số càng nhỏ càng mượt nhưng trễ (lag), càng lớn càng nhanh nhưng giật. 0.2 là cân bằng.
+                let lerpFactor = 0.2; 
+                pClient.x += (pServer.x - pClient.x) * lerpFactor;
+                pClient.y += (pServer.y - pClient.y) * lerpFactor;
+                
+                // Làm mượt cả góc quay (Angle)
+                // Xử lý trường hợp quay qua mốc 0-360 độ để không bị xoay vòng
+                let diffAngle = pServer.angle - pClient.angle;
+                while (diffAngle > Math.PI) diffAngle -= 2 * Math.PI;
+                while (diffAngle < -Math.PI) diffAngle += 2 * Math.PI;
+                pClient.angle += diffAngle * lerpFactor;
+
+                // --- VẼ TANK ---
+                ctx.save();
+                ctx.translate(pClient.x, pClient.y);
+                ctx.rotate(pClient.angle);
+                
+                let img = skinImages[pServer.skin] || skinImages['tank'];
                 
                 if (img && img.complete && img.naturalWidth !== 0) {
-                    // Tính toán tỷ lệ khung hình để không bị méo ảnh
                     let ratio = img.naturalWidth / img.naturalHeight;
-                    let drawW = 64;
-                    let drawH = 64;
-
-                    if (ratio > 1) {
-                        // Ảnh ngang (Rộng hơn cao) -> Set Width=64, Height tự tính
-                        drawH = 64 / ratio;
-                    } else {
-                        // Ảnh dọc (Cao hơn rộng) -> Set Height=64, Width tự tính
-                        drawW = 64 * ratio;
-                    }
-                    
-                    // Vẽ ảnh căn giữa
+                    let drawW = 64; let drawH = 64;
+                    if (ratio > 1) drawH = 64 / ratio; else drawW = 64 * ratio;
                     ctx.drawImage(img, -drawW/2, -drawH/2, drawW, drawH);
                 } else {
                     ctx.fillStyle = 'blue'; ctx.fillRect(-20, -20, 40, 40);
@@ -350,28 +373,43 @@
                 }
                 ctx.restore();
 
-                let drawX = p.currentX || p.x;
-                let drawY = p.currentY || p.y;
+                // --- VẼ THANH MÁU & TÊN ---
+                let drawX = pClient.x;
+                let drawY = pClient.y;
 
-                ctx.fillStyle = 'white'; ctx.font='10px Arial'; ctx.fillText(p.username, drawX-20, drawY-40);
-                let maxHp = p.maxHp || 100;
+                ctx.fillStyle = 'white'; ctx.font='10px Arial'; ctx.fillText(pServer.username, drawX-20, drawY-40);
+                let maxHp = pServer.maxHp || 100;
+                
+                // Khung máu đỏ (mất máu)
                 ctx.fillStyle = 'red'; ctx.fillRect(drawX-32, drawY-35, 64, 5);
-                ctx.fillStyle = '#0f0'; ctx.fillRect(drawX-32, drawY-35, (p.hp/maxHp)*64, 5);
+                // Máu hiện tại (xanh lá)
+                ctx.fillStyle = '#0f0'; ctx.fillRect(drawX-32, drawY-35, (pServer.hp/maxHp)*64, 5);
 
+                // Thanh nạp đạn (Chỉ hiện cho bản thân mình)
                 if (id === socket.id) {
-                    let timeSinceShot = data.serverTime - p.lastShotTime;
-                    let reloadPercent = timeSinceShot / p.reloadTime;
+                    let timeSinceShot = latestServerData.serverTime - pServer.lastShotTime;
+                    let reloadPercent = timeSinceShot / pServer.reloadTime;
                     if (reloadPercent > 1) reloadPercent = 1;
+                    
                     ctx.fillStyle = '#555'; ctx.fillRect(drawX-32, drawY-28, 64, 3);
                     ctx.fillStyle = 'yellow'; ctx.fillRect(drawX-32, drawY-28, reloadPercent*64, 3);
                 }
             }
+
+            // Xóa tank không còn tồn tại (người chơi thoát)
+            for (let id in clientTanks) {
+                if (!latestServerData.players[id]) delete clientTanks[id];
+            }
             
+            // 4. VẼ ĐẠN (BULLETS)
+            // Đạn bay nhanh nên có thể vẽ trực tiếp từ server data hoặc nội suy nếu muốn siêu mượt
+            // Ở đây vẽ trực tiếp cho đơn giản và chính xác vị trí va chạm
             ctx.fillStyle = '#ff0';
-            data.bullets.forEach(b => {
+            latestServerData.bullets.forEach(b => {
                 ctx.beginPath(); ctx.arc(b.x, b.y, 5, 0, Math.PI*2); ctx.fill();
             });
         }
+
     </script>
 </body>
 </html>
