@@ -280,7 +280,7 @@ setInterval(async () => {
     }
   }
   io.sockets.emit('state', { players, bullets, serverTime: Date.now() });
-}, 1000 / 60);
+}, 1000 / 24); // OPTIMIZATION: Reduced to 24 FPS to reduce lag
 
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, '0.0.0.0', () => console.log(`Server Tank War running on port ${PORT}...`));
