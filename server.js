@@ -1,4 +1,5 @@
 const express = require('express');
+const fs = require('fs'); // Module FS cho Backup
 const http = require('http');
 const path = require('path');
 const socketIO = require('socket.io');
@@ -27,8 +28,113 @@ const UserSchema = new mongoose.Schema({
 const UserModel = mongoose.model('User', UserSchema);
 
 app.set('port', 5000);
+app.use(express.json()); // Enable JSON body parsing
 app.use(express.static(path.join(__dirname, 'public')));
+
+// --- MIDDLEWARE LOGGING (Chương 8: Log Management) ---
+app.use((req, res, next) => {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+  next();
+});
+
+// --- HEALTH CHECK (Chương 8: Health Monitoring) ---
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'UP',
+    uptime: process.uptime(),
+    timestamp: Date.now(),
+    dbConnection: useDB ? 'Connected' : 'Disconnected (RAM Mode)'
+  });
+});
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
+
+// --- HTTP API ROUTES ---
+
+// API REGISTER
+app.post('/api/register', async (req, res) => {
+  try {
+    const { username, password } = req.body;
+    if (!username || !password) return res.status(400).json({ error: 'Thiếu thông tin!' });
+
+    let existing = await findUser(username);
+    if (existing) return res.status(400).json({ error: 'Tên đã tồn tại!' });
+
+    await createUser(username, password);
+    res.json({ message: 'Tạo tài khoản thành công! Hãy đăng nhập.' });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// API LOGIN
+app.post('/api/login', async (req, res) => {
+  try {
+    const { username, password } = req.body;
+    let user = await findUser(username);
+
+    if (!user) return res.status(400).json({ error: 'Tài khoản không tồn tại!' });
+    if (user.password !== password) return res.status(400).json({ error: 'Sai mật khẩu!' });
+
+    let clientData = useDB ? user.toObject() : user;
+    delete clientData.password;
+
+    res.json({
+      user: clientData,
+      config: TANK_CONFIG,
+      gameServerUrl: '', // Same host
+      map: MAP,
+      tileSize: TILE_SIZE
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// API BUY SKIN
+app.post('/api/shop/buy', async (req, res) => {
+  try {
+    const { username, skinName } = req.body;
+    let user = await findUser(username);
+    if (!user) return res.status(400).json({ error: 'User not found' });
+
+    let info = TANK_CONFIG[skinName];
+    if (info && user.money >= info.price && !user.skins.includes(skinName)) {
+      user.money -= info.price;
+      user.skins.push(skinName);
+      await saveUser(user);
+
+      let clientData = useDB ? user.toObject() : user;
+      delete clientData.password;
+      res.json({ user: clientData });
+    } else {
+      res.status(400).json({ error: 'Không đủ tiền hoặc đã sở hữu!' });
+    }
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// API SELECT SKIN
+app.post('/api/shop/select', async (req, res) => {
+  try {
+    const { username, skinName } = req.body;
+    let user = await findUser(username);
+    if (!user) return res.status(400).json({ error: 'User not found' });
+
+    if (user.skins.includes(skinName)) {
+      user.currentSkin = skinName;
+      await saveUser(user);
+
+      let clientData = useDB ? user.toObject() : user;
+      delete clientData.password;
+      res.json({ user: clientData });
+    } else {
+      res.status(400).json({ error: 'Bạn chưa sở hữu skin này!' });
+    }
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 // --- CẤU HÌNH MAP  ---
 const TILE_SIZE = 20; const COLS = 40; const ROWS = 30;
@@ -181,10 +287,18 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('join_game', () => {
+  socket.on('join_game', async (data) => {
+    // Nếu chưa có userData (do dùng HTTP login), ta tìm lại user
+    if (!userData && data && data.username) {
+      userData = await findUser(data.username);
+      currentUser = data.username;
+    }
+
     if (!userData) return;
-    let skin = userData.currentSkin;
-    let stats = TANK_CONFIG[skin];
+
+    let skin = (data && data.skin) ? data.skin : userData.currentSkin;
+    let stats = TANK_CONFIG[skin] || TANK_CONFIG['tank'];
+
     // Respawn logic ...
     let spawnX, spawnY, attempts = 0;
     do { spawnX = Math.random() * 700 + 50; spawnY = Math.random() * 500 + 50; attempts++; }
@@ -239,7 +353,49 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => delete players[socket.id]);
 });
 
+// --- SHIELD ITEM LOGIC ---
+let shieldItem = { x: -100, y: -100, active: false, nextSpawnTime: Date.now() };
+
+function spawnShield() {
+  let attempts = 0;
+  let spawnX, spawnY;
+  do {
+    spawnX = Math.random() * 700 + 50;
+    spawnY = Math.random() * 500 + 50;
+    attempts++;
+  } while ((checkWallCollision(spawnX, spawnY)) && attempts < 100);
+
+  if (attempts < 100) {
+    shieldItem.x = spawnX;
+    shieldItem.y = spawnY;
+    shieldItem.active = true;
+  }
+}
+
 setInterval(async () => {
+  let now = Date.now();
+
+  // 1. Spawn Shield logic
+  if (!shieldItem.active && now >= shieldItem.nextSpawnTime) {
+    spawnShield();
+  }
+
+  // 2. Check Shield Pickup (khoảng cách 30px)
+  if (shieldItem.active) {
+    for (let id in players) {
+      let p = players[id];
+      if (Math.sqrt((p.x - shieldItem.x) ** 2 + (p.y - shieldItem.y) ** 2) < 40) { // Bán kính 40 nhặt cho dễ
+        shieldItem.active = false;
+        shieldItem.nextSpawnTime = now + 60000; // 1 phút sau spawn lại
+        p.invincibleUntil = now + 3000; // Bất tử 3s
+
+        // Optional: Thông báo việc nhặt khiên
+        // io.emit('shield_pickup', { playerId: id }); 
+        break;
+      }
+    }
+  }
+
   for (let i = 0; i < bullets.length; i++) {
     bullets[i].x += bullets[i].speedX; bullets[i].y += bullets[i].speedY;
     let gridX = Math.floor(bullets[i].x / TILE_SIZE);
@@ -251,6 +407,9 @@ setInterval(async () => {
     for (let id in players) {
       if (id === bullets[i].ownerId) continue;
       let p = players[id];
+      // Kiểm tra bất tử
+      if (p.invincibleUntil && now < p.invincibleUntil) continue;
+
       if (Math.sqrt((bullets[i].x - p.x) ** 2 + (bullets[i].y - p.y) ** 2) < 25) {
         p.hp -= bullets[i].damage; hit = true;
         if (p.hp <= 0) {
@@ -271,6 +430,7 @@ setInterval(async () => {
           do { p.x = Math.random() * 700 + 50; p.y = Math.random() * 500 + 50; attempts++; }
           while ((checkWallCollision(p.x, p.y) || checkTankCollision(id, p.x, p.y)) && attempts < 200);
           p.hp = TANK_CONFIG[p.skin].hp;
+          p.invincibleUntil = 0; // Reset bất tử khi chết (nếu có logic respawn shield, nhưng đây là respawn thường)
         }
         break;
       }
@@ -279,8 +439,30 @@ setInterval(async () => {
       bullets.splice(i, 1); i--;
     }
   }
-  io.sockets.emit('state', { players, bullets, serverTime: Date.now() });
+  io.sockets.emit('state', { players, bullets, shield: shieldItem, serverTime: Date.now() });
 }, 1000 / 24); // OPTIMIZATION: Reduced to 24 FPS to reduce lag
+
+// --- BACKUP AUTOMATION (Chương 7: Sao lưu) ---
+// Tự động sao lưu dữ liệu RAM ra file backup.json mỗi 10 phút
+function backupData() {
+  try {
+    if (Object.keys(usersDatabase).length > 0) {
+      fs.writeFileSync('backup_users.json', JSON.stringify(usersDatabase, null, 2));
+      console.log(`[BACKUP] Đã sao lưu ${Object.keys(usersDatabase).length} users vào backup_users.json`);
+    }
+  } catch (e) {
+    console.error("[BACKUP ERROR]", e);
+  }
+}
+setInterval(backupData, 10 * 60 * 1000); // 10 phút/lần
+
+// --- GRACEFUL SHUTDOWN (Chương 3: Quản lý tiến trình) ---
+process.on('SIGINT', async () => {
+  console.log('\n[SERVER] Đang tắt server an toàn...');
+  backupData(); // Backup lần cuối
+  if (useDB) await mongoose.connection.close();
+  process.exit(0);
+});
 
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, '0.0.0.0', () => console.log(`Server Tank War running on port ${PORT}...`));

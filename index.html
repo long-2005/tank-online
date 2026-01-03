@@ -87,8 +87,14 @@
             skinImages[name].src = `/images/${name}.png`;
         });
         
+        const shieldImg = new Image(); 
+        shieldImg.src = '/images/shield.png';
+        const shieldIconImg = new Image();
+        shieldIconImg.src = '/images/shieldicon.png';
+        
         const wallImg = new Image(); 
         wallImg.src = '/images/wall.jpg?v=3';
+
         wallImg.onerror = () => console.error("Could not load wall.jpg");
 
         const bgImg = new Image(); 
@@ -329,6 +335,22 @@
             // Nếu chưa có dữ liệu từ server thì không vẽ tank/đạn
             if (!latestServerData) return;
 
+            // DRAW SHIELD ITEM
+            if (latestServerData.shield && latestServerData.shield.active) {
+                // Draw rotating effect or pulsing? Just simple draw first.
+                let sx = latestServerData.shield.x;
+                let sy = latestServerData.shield.y;
+                let pulsate = 1 + Math.sin(Date.now() / 200) * 0.1;
+                let size = 32 * pulsate;
+                
+                if(shieldIconImg.complete) {
+                    ctx.drawImage(shieldIconImg, sx - size/2, sy - size/2, size, size);
+                } else {
+                    ctx.fillStyle = 'cyan';
+                    ctx.beginPath(); ctx.arc(sx, sy, 15, 0, Math.PI*2); ctx.fill();
+                }
+            }
+
             // 3. VẼ & LÀM MƯỢT XE TĂNG (PLAYERS)
             for(let id in latestServerData.players) {
                 let pServer = latestServerData.players[id];
@@ -371,6 +393,24 @@
                     ctx.fillStyle = 'blue'; ctx.fillRect(-20, -20, 40, 40);
                     ctx.fillStyle = 'black'; ctx.fillRect(0, -5, 30, 10);
                 }
+
+                // DRAW SHIELD EFFECT ON PLAYER
+                if (pServer.invincibleUntil && pServer.invincibleUntil > latestServerData.serverTime) {
+                     ctx.save();
+                     // Hiệu ứng xoay
+                     let angle = (Date.now() / 500) % (Math.PI * 2);
+                     ctx.rotate(angle);
+                     
+                     if (shieldImg.complete && shieldImg.naturalWidth !== 0) {
+                        let size = 96; 
+                        ctx.drawImage(shieldImg, -size/2, -size/2, size, size);
+                     } else {
+                        ctx.strokeStyle = '#00ffff'; ctx.lineWidth = 3;
+                        ctx.beginPath(); ctx.arc(0, 0, 40, 0, Math.PI*2); ctx.stroke();
+                     }
+                     ctx.restore();
+                }
+
                 ctx.restore();
 
                 // --- VẼ THANH MÁU & TÊN ---

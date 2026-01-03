@@ -19,8 +19,8 @@ const MONGO_URI = process.env.MONGO_URI || process.env.Mongo_url || "mongodb+srv
 let useDB = false;
 
 mongoose.connect(MONGO_URI)
-    .then(() => { console.log("✅ [Game] Connected to MongoDB"); useDB = true; })
-    .catch(err => console.log("❌ [Game] DB Error:", err));
+    .then(() => { console.log(" [Game] Connected to MongoDB"); useDB = true; })
+    .catch(err => console.log(" [Game] DB Error:", err));
 
 const UserSchema = new mongoose.Schema({
     username: String,
