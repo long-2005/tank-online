@@ -176,8 +176,50 @@ io.on('connection', (socket) => {
     });
 });
 
-// GAME LOOP (24 FPS)
+
+// --- SHIELD ITEM LOGIC ---
+let shieldItem = { x: -100, y: -100, active: false, nextSpawnTime: Date.now() };
+
+function spawnShield() {
+    let attempts = 0;
+    let spawnX, spawnY;
+    do {
+        spawnX = Math.random() * 700 + 50;
+        spawnY = Math.random() * 500 + 50;
+        attempts++;
+    } while ((checkWallCollision(spawnX, spawnY)) && attempts < 100);
+
+    if (attempts < 100) {
+        shieldItem.x = spawnX;
+        shieldItem.y = spawnY;
+        shieldItem.active = true;
+    }
+}
+
+
+
+//GAME LOOP (24 FPS)
 setInterval(async () => {
+    let now = Date.now();
+
+    // 1. Spawn Shield logic
+    if (!shieldItem.active && now >= shieldItem.nextSpawnTime) {
+        spawnShield();
+    }
+
+    // 2. Check Shield Pickup (khoảng cách 40px)
+    if (shieldItem.active) {
+        for (let id in players) {
+            let p = players[id];
+            if (Math.sqrt((p.x - shieldItem.x) ** 2 + (p.y - shieldItem.y) ** 2) < 40) {
+                shieldItem.active = false;
+                shieldItem.nextSpawnTime = now + 60000; // 1 phút sau spawn lại
+                p.invincibleUntil = now + 3000; // Bất tử 3s
+                break;
+            }
+        }
+    }
+
     for (let i = 0; i < bullets.length; i++) {
         bullets[i].x += bullets[i].speedX; bullets[i].y += bullets[i].speedY;
         let gridX = Math.floor(bullets[i].x / TILE_SIZE);
@@ -189,6 +231,10 @@ setInterval(async () => {
         for (let id in players) {
             if (id === bullets[i].ownerId) continue;
             let p = players[id];
+
+            // Check Invincibility
+            if (p.invincibleUntil && now < p.invincibleUntil) continue;
+
             if (Math.sqrt((bullets[i].x - p.x) ** 2 + (bullets[i].y - p.y) ** 2) < 25) {
                 p.hp -= bullets[i].damage; hit = true;
 
@@ -217,6 +263,7 @@ setInterval(async () => {
                     // Get maxHp if possible (or default)
                     let stats = TANK_CONFIG[p.skin] || TANK_CONFIG['tank'];
                     p.hp = stats.hp;
+                    p.invincibleUntil = 0; // Reset invincible on death
                 }
                 break;
             }
@@ -225,5 +272,5 @@ setInterval(async () => {
             bullets.splice(i, 1); i--;
         }
     }
-    io.sockets.emit('state', { players, bullets, serverTime: Date.now() });
+    io.sockets.emit('state', { players, bullets, shield: shieldItem, serverTime: Date.now() });
 }, 1000 / 24);
