@@ -39,6 +39,23 @@ async function findUser(username) {
     return null;
 }
 
+// --- MIDDLEWARE LOGGING (Chương 8: Log Management) ---
+app.use((req, res, next) => {
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+    next();
+});
+
+// --- HEALTH CHECK (Chương 8: Health Monitoring) ---
+app.get('/health', (req, res) => {
+    res.json({
+        status: 'UP',
+        service: 'Auth Service',
+        uptime: process.uptime(),
+        timestamp: Date.now(),
+        dbConnection: useDB ? 'Connected' : 'Disconnected'
+    });
+});
+
 // --- API ENDPOINTS ---
 
 // 1. REGISTER
@@ -138,6 +155,13 @@ app.post('/api/shop/select', async (req, res) => {
             res.status(400).json({ error: 'Skin not owned' });
         }
     } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// --- GRACEFUL SHUTDOWN (Chương 3: Quản lý tiến trình) ---
+process.on('SIGINT', async () => {
+    console.log('\n[AUTH SERVICE] Shutting down gracefully...');
+    if (useDB) await mongoose.connection.close();
+    process.exit(0);
 });
 
 // Root: Serve index.html
