@@ -1,17 +1,71 @@
 const { Server } = require("socket.io");
 const mongoose = require('mongoose');
+const http = require('http');
+const fs = require('fs');
 
 const PORT = process.env.PORT || 6000;
 
-// Socket.io Server (Standalone)
-const io = new Server(PORT, {
+// --- HTTP SERVER (Native Node.js for Health Check & Logging) ---
+// Chương 8: Log Management - Log request vào console
+// Chương 8: Health Monitoring - Endpoint /health
+const httpServer = http.createServer((req, res) => {
+    // Logging
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+
+    // Health Check
+    if (req.url === '/health') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+            status: 'UP',
+            service: 'Game Service',
+            uptime: process.uptime(),
+            timestamp: Date.now(),
+            dbConnection: useDB ? 'Connected' : 'Disconnected (RAM Mode)'
+        }));
+        return;
+    }
+
+    res.writeHead(404);
+    res.end();
+});
+
+// Socket.io Server (Attached to HTTP Server)
+const io = new Server(httpServer, {
     cors: {
-        origin: "*", // Adjust in production
+        origin: "*",
         methods: ["GET", "POST"]
     }
 });
 
-console.log(`🚀 [Game Service] Socket.io running on port ${PORT}`);
+httpServer.listen(PORT, () => {
+    console.log(`🚀 [Game Service] HTTP & Socket.io running on port ${PORT}`);
+});
+
+// --- BACKUP AUTOMATION (Chương 7: Sao lưu) ---
+// Tự động sao lưu dữ liệu RAM
+function backupData() {
+    try {
+        // Game Service holds 'players' in memory during a match.
+        // We can dump 'players' state.
+        if (Object.keys(players).length > 0) {
+            fs.writeFileSync('backup_gamestate.json', JSON.stringify(players, null, 2));
+            console.log(`[BACKUP] Saved ${Object.keys(players).length} players state.`);
+        }
+    } catch (e) {
+        console.error("[BACKUP ERROR]", e);
+    }
+}
+setInterval(backupData, 10 * 60 * 1000); // 10 mins
+
+// --- GRACEFUL SHUTDOWN (Chương 3: Quản lý tiến trình) ---
+process.on('SIGINT', async () => {
+    console.log('\n[GAME SERVICE] Shutting down gracefully...');
+    backupData();
+    if (useDB) await mongoose.connection.close();
+    process.exit(0);
+});
+
+// Remove old console log line since we listen inside callback now
 
 // --- DATABASE CONNECTION ---
 // Needed to update money on kill
