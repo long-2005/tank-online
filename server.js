@@ -136,6 +136,21 @@ app.post('/api/shop/select', async (req, res) => {
   }
 });
 
+// API LEADERBOARD
+app.get('/api/leaderboard', async (req, res) => {
+  try {
+    let users = [];
+    if (useDB) {
+      users = await UserModel.find().sort({ money: -1 }).limit(10);
+    } else {
+      users = Object.values(usersDatabase).sort((a, b) => b.money - a.money).slice(0, 10);
+    }
+    res.json(users);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // --- CẤU HÌNH MAP  ---
 const TILE_SIZE = 20; const COLS = 40; const ROWS = 30;
 // BẢN ĐỒ CỐ ĐỊNH (FIXED MAP)

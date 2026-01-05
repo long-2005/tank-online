@@ -49,6 +49,7 @@
 
     <div id="hud">
         <div id="money-display"> <span id="game-money">0</span> $</div>
+        <div id="ping-display" style="position: absolute; top: 15px; right: 70px; font-weight: bold; font-size: 18px; color: #2ecc71;">Ping: 0ms</div>
         <button id="btn-quit" onclick="leaveGame()">✕</button>
     </div>
 
@@ -68,7 +69,17 @@
             <h2>GARAGE</h2>
             <p>Tài sản: <span id="user-money" style="color:#f1c40f; font-size: 1.4em;">0</span> $</p>
             <div id="shop-container"></div>
-            <button onclick="playGame()" style="background:#27ae60; margin-top: 10px;">VÀO TRẬN ĐẤU</button>
+            <div id="shop-container"></div>
+            <div style="display:flex; justify-content:center; gap:10px; margin-top:10px;">
+                <button onclick="playGame()" style="background:#27ae60; flex:2;">VÀO TRẬN ĐẤU</button>
+                <button onclick="showLeaderboard()" style="background:#8e44ad; flex:1;">🏆 BXH</button>
+            </div>
+        </div>
+        
+        <div id="leaderboard-screen" class="panel" style="display:none;">
+            <h2>🏆 BẢNG XẾP HẠNG</h2>
+            <div id="leaderboard-list" style="text-align:left; max-height: 300px; overflow-y:auto;">Loading...</div>
+            <button onclick="closeLeaderboard()" style="margin-top:15px; background:#95a5a6;">QUAY LẠI</button>
         </div>
     </div>
 
@@ -147,6 +158,41 @@
             }
         }
 
+        async function showLeaderboard() {
+            document.getElementById('menu-screen').style.display = 'none';
+            document.getElementById('leaderboard-screen').style.display = 'block';
+            
+            const list = document.getElementById('leaderboard-list');
+            list.innerHTML = 'Loading...';
+
+            try {
+                const res = await fetch('/api/leaderboard');
+                const data = await res.json();
+                
+                if (data && data.length > 0) {
+                    let html = '<ol style="padding-left: 20px;">';
+                    data.forEach(u => {
+                        html += `<li style="margin-bottom:5px; border-bottom:1px solid #555; padding:5px;">
+                            <span style="font-weight:bold; color:#f1c40f">${u.username}</span> 
+                            - Skin: ${u.skins.length} 
+                            - Money: <span style="color:#2ecc71">${u.money}$</span>
+                        </li>`;
+                    });
+                    html += '</ol>';
+                    list.innerHTML = html;
+                } else {
+                    list.innerHTML = 'Chưa có dữ liệu';
+                }
+            } catch(e) {
+                list.innerHTML = 'Lỗi tải BXH';
+            }
+        }
+
+        function closeLeaderboard() {
+            document.getElementById('leaderboard-screen').style.display = 'none';
+            document.getElementById('menu-screen').style.display = 'block';
+        }
+
         async function login() {
             let u = document.getElementById('username').value;
             let p = document.getElementById('password').value;
@@ -200,6 +246,13 @@
                     socket.emit('ping_check', () => {
                         const latency = Date.now() - start;
                         currentPing = latency;
+                        
+                        // Update UI HTML directly
+                        const pingEl = document.getElementById('ping-display');
+                        if(pingEl) {
+                            pingEl.innerText = `Ping: ${currentPing}ms`;
+                            pingEl.style.color = currentPing < 100 ? '#2ecc71' : (currentPing < 200 ? '#f1c40f' : '#e74c3c');
+                        }
                     });
                 }, 1000);
             });
@@ -463,10 +516,7 @@
                 ctx.beginPath(); ctx.arc(b.x, b.y, 5, 0, Math.PI*2); ctx.fill();
             });
 
-            // 5. VẼ PING
-            ctx.font = 'bold 16px Arial';
-            ctx.fillStyle = currentPing < 100 ? '#2ecc71' : (currentPing < 200 ? '#f1c40f' : '#e74c3c');
-            ctx.fillText(`Ping: ${currentPing} ms`, 680, 25);
+            // 5. REMOVED CANVAS PING DRAWING (Moved to HTML UI)
         }
 
     </script>

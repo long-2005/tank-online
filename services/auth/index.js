@@ -185,6 +185,22 @@ app.post('/api/shop/select', async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// --- LEADERBOARD API ---
+app.get('/api/leaderboard', async (req, res) => {
+    try {
+        let users = [];
+        if (useDB) {
+            users = await UserModel.find().sort({ money: -1 }).limit(10);
+        } else {
+            // RAM Fallback: not really scalable but consistent with current design
+            users = [];
+        }
+        res.json(users);
+    } catch (e) {
+        res.status(500).json({ error: 'Server error' });
+    }
+});
+
 // --- GRACEFUL SHUTDOWN (Chương 3: Quản lý tiến trình) ---
 process.on('SIGINT', async () => {
     console.log('\n[AUTH SERVICE] Shutting down gracefully...');
