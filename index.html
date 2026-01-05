@@ -180,6 +180,7 @@
         // --- BIẾN TOÀN CỤC CHO GAME LOOP ---
         let latestServerData = null; // Chứa dữ liệu mới nhất từ Server gửi về (24 lần/giây)
         let animationId = null;      // ID của vòng lặp vẽ (để dừng khi thoát)
+        let currentPing = 0;         // Biến lưu Ping hiện tại
 
         // --- KẾT NỐI SOCKET ---
         function connectGameSocket(url) {
@@ -192,6 +193,15 @@
                      console.log("🔄 Rejoining game after reconnect...");
                      socket.emit('join_game', { username: myUser.username, skin: myUser.currentSkin });
                 }
+                
+                // Start Ping Loop
+                setInterval(() => {
+                    const start = Date.now();
+                    socket.emit('ping_check', () => {
+                        const latency = Date.now() - start;
+                        currentPing = latency;
+                    });
+                }, 1000);
             });
             
             socket.on('kill_reward', (amount) => {
@@ -452,6 +462,11 @@
             latestServerData.bullets.forEach(b => {
                 ctx.beginPath(); ctx.arc(b.x, b.y, 5, 0, Math.PI*2); ctx.fill();
             });
+
+            // 5. VẼ PING
+            ctx.font = 'bold 16px Arial';
+            ctx.fillStyle = currentPing < 100 ? '#2ecc71' : (currentPing < 200 ? '#f1c40f' : '#e74c3c');
+            ctx.fillText(`Ping: ${currentPing} ms`, 680, 25);
         }
 
     </script>

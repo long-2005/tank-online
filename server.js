@@ -350,6 +350,10 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('ping_check', (cb) => {
+    if (typeof cb === 'function') cb();
+  });
+
   socket.on('disconnect', () => delete players[socket.id]);
 });
 

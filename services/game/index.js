@@ -191,6 +191,15 @@ io.on('connection', (socket) => {
         // Client already got it from Auth, but good to be safe.
     });
 
+    socket.on('join_game', (data) => {
+        // ... (existing join logic) we can leave this here or just insert before it. 
+        // Actually, let's look at the target content to place it correctly.
+    });
+
+    socket.on('ping_check', (cb) => {
+        if (typeof cb === 'function') cb();
+    });
+
     socket.on('disconnect', () => delete players[socket.id]);
 
     socket.on('movement', (data) => {
