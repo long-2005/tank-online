@@ -252,79 +252,81 @@ function spawnShield() {
 
 
 
-//GAME LOOP (24 FPS)
+// GAME LOOP (24 FPS)
 setInterval(async () => {
-    let now = Date.now();
+    try {
+        let now = Date.now();
 
-    // 1. Spawn Shield logic
-    if (!shieldItem.active && now >= shieldItem.nextSpawnTime) {
-        spawnShield();
-    }
-
-    // 2. Check Shield Pickup (khoảng cách 40px)
-    if (shieldItem.active) {
-        for (let id in players) {
-            let p = players[id];
-            if (Math.sqrt((p.x - shieldItem.x) ** 2 + (p.y - shieldItem.y) ** 2) < 40) {
-                shieldItem.active = false;
-                shieldItem.nextSpawnTime = now + 60000; // 1 phút sau spawn lại
-                p.invincibleUntil = now + 3000; // Bất tử 3s
-                break;
-            }
+        // 1. Spawn Shield logic
+        if (!shieldItem.active && now >= shieldItem.nextSpawnTime) {
+            spawnShield();
         }
-    }
 
-    for (let i = 0; i < bullets.length; i++) {
-        bullets[i].x += bullets[i].speedX; bullets[i].y += bullets[i].speedY;
-        let gridX = Math.floor(bullets[i].x / TILE_SIZE);
-        let gridY = Math.floor(bullets[i].y / TILE_SIZE);
-        if (gridY < 0 || gridY >= ROWS || gridX < 0 || gridX >= COLS || MAP[gridY][gridX] === 1) {
-            bullets.splice(i, 1); i--; continue;
-        }
-        let hit = false;
-        for (let id in players) {
-            if (id === bullets[i].ownerId) continue;
-            let p = players[id];
-
-            // Check Invincibility
-            if (p.invincibleUntil && now < p.invincibleUntil) continue;
-
-            if (Math.sqrt((bullets[i].x - p.x) ** 2 + (bullets[i].y - p.y) ** 2) < 25) {
-                p.hp -= bullets[i].damage; hit = true;
-
-                if (p.hp <= 0) {
-                    // KILL!
-                    let killerSocketId = bullets[i].ownerId;
-                    let killerName = players[killerSocketId]?.username;
-
-                    if (killerName) {
-                        // Update Money in DB
-                        await addMoney(killerName, 100);
-                        // We can't easily notify Auth Service to update client UI via socket unless we used Redis.
-                        // For now, client won't see money update instantly until they re-login or use Shop API.
-                        // OR proper way: Game sends message to Auth? Or Game emits 'money_update' to client directly (but game service doesn't store money).
-                        // Simpler: Game Service emits 'kill_reward' {amount: 100} to client, client UI updates (Optimistic).
-                        if (io.sockets.sockets.get(killerSocketId)) {
-                            io.to(killerSocketId).emit('kill_reward', 100);
-                        }
-                    }
-
-                    // Respawn
-                    let attempts = 0;
-                    do { p.x = Math.random() * 700 + 50; p.y = Math.random() * 500 + 50; attempts++; }
-                    while ((checkWallCollision(p.x, p.y) || checkTankCollision(id, p.x, p.y)) && attempts < 200);
-
-                    // Get maxHp if possible (or default)
-                    let stats = TANK_CONFIG[p.skin] || TANK_CONFIG['tank'];
-                    p.hp = stats.hp;
-                    p.invincibleUntil = 0; // Reset invincible on death
+        // 2. Check Shield Pickup (khoảng cách 40px)
+        if (shieldItem.active) {
+            for (let id in players) {
+                let p = players[id];
+                if (!p) continue;
+                if (Math.sqrt((p.x - shieldItem.x) ** 2 + (p.y - shieldItem.y) ** 2) < 40) {
+                    shieldItem.active = false;
+                    shieldItem.nextSpawnTime = now + 60000; // 1 phút sau spawn lại
+                    p.invincibleUntil = now + 3000; // Bất tử 3s
+                    break;
                 }
-                break;
             }
         }
-        if (bullets[i].x < 0 || bullets[i].x > 800 || bullets[i].y < 0 || bullets[i].y > 600 || hit) {
-            bullets.splice(i, 1); i--;
+
+        for (let i = 0; i < bullets.length; i++) {
+            bullets[i].x += bullets[i].speedX; bullets[i].y += bullets[i].speedY;
+            let gridX = Math.floor(bullets[i].x / TILE_SIZE);
+            let gridY = Math.floor(bullets[i].y / TILE_SIZE);
+            if (gridY < 0 || gridY >= ROWS || gridX < 0 || gridX >= COLS || MAP[gridY][gridX] === 1) {
+                bullets.splice(i, 1); i--; continue;
+            }
+            let hit = false;
+            for (let id in players) {
+                if (id === bullets[i].ownerId) continue;
+                let p = players[id];
+                if (!p) continue;
+
+                // Check Invincibility
+                if (p.invincibleUntil && now < p.invincibleUntil) continue;
+
+                if (Math.sqrt((bullets[i].x - p.x) ** 2 + (bullets[i].y - p.y) ** 2) < 25) {
+                    p.hp -= bullets[i].damage; hit = true;
+
+                    if (p.hp <= 0) {
+                        // KILL!
+                        let killerSocketId = bullets[i].ownerId;
+                        let killerName = players[killerSocketId]?.username;
+
+                        if (killerName) {
+                            // Update Money in DB
+                            await addMoney(killerName, 100);
+                            if (io.sockets.sockets.get(killerSocketId)) {
+                                io.to(killerSocketId).emit('kill_reward', 100);
+                            }
+                        }
+
+                        // Respawn
+                        let attempts = 0;
+                        do { p.x = Math.random() * 700 + 50; p.y = Math.random() * 500 + 50; attempts++; }
+                        while ((checkWallCollision(p.x, p.y) || checkTankCollision(id, p.x, p.y)) && attempts < 200);
+
+                        // Get maxHp if possible (or default)
+                        let stats = TANK_CONFIG[p.skin] || TANK_CONFIG['tank'];
+                        p.hp = stats.hp;
+                        p.invincibleUntil = 0; // Reset invincible on death
+                    }
+                    break;
+                }
+            }
+            if (bullets[i].x < 0 || bullets[i].x > 800 || bullets[i].y < 0 || bullets[i].y > 600 || hit) {
+                bullets.splice(i, 1); i--;
+            }
         }
+        io.sockets.emit('state', { players, bullets, shield: shieldItem, serverTime: Date.now() });
+    } catch (e) {
+        console.error("❌ CRITICAL GAME LOOP ERROR:", e);
     }
-    io.sockets.emit('state', { players, bullets, shield: shieldItem, serverTime: Date.now() });
 }, 1000 / 24);

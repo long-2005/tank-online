@@ -188,6 +188,10 @@
             
             socket.on('connect', () => {
                 console.log("Connected to Game Socket!");
+                if (myUser) {
+                     console.log("🔄 Rejoining game after reconnect...");
+                     socket.emit('join_game', { username: myUser.username, skin: myUser.currentSkin });
+                }
             });
             
             socket.on('kill_reward', (amount) => {
