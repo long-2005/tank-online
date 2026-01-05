@@ -184,7 +184,8 @@ io.on('connection', (socket) => {
             username: data.username,
             x: spawnX, y: spawnY, angle: 0, skin: skinName,
             hp: stats.hp, maxHp: stats.hp, speed: stats.speed, damage: stats.damage,
-            recoil: stats.recoil, reloadTime: stats.reloadTime, lastShotTime: 0
+            recoil: stats.recoil, reloadTime: stats.reloadTime, lastShotTime: 0,
+            lastActive: Date.now() // Track AFK
         };
 
         // Emit init config (Map/TileSize) just in case client needs it? 
@@ -217,6 +218,7 @@ io.on('connection', (socket) => {
             let dy = Math.sin(p.angle) * moveStep;
             if (!checkWallCollision(p.x + dx, p.y) && !checkTankCollision(socket.id, p.x + dx, p.y)) p.x += dx;
             if (!checkWallCollision(p.x, p.y + dy) && !checkTankCollision(socket.id, p.x, p.y + dy)) p.y += dy;
+            p.lastActive = Date.now();
         }
     });
 
@@ -260,6 +262,31 @@ function spawnShield() {
 }
 
 
+
+// --- CLEANING PROCESS (Background Task) ---
+// Chương ?: Tối ưu tài nguyên
+function startCleanupProcess() {
+    setInterval(() => {
+        const now = Date.now();
+        const AFK_TIMEOUT = 5 * 60 * 1000; // 5 mins
+
+        for (let id in players) {
+            let p = players[id];
+            if (now - p.lastActive > AFK_TIMEOUT) {
+                console.log(`[CLEANUP] Kicking AFK player: ${p.username} (${id})`);
+                // Close socket
+                if (io.sockets.sockets.get(id)) {
+                    io.sockets.sockets.get(id).disconnect(true);
+                }
+                delete players[id];
+            }
+        }
+
+        // Also clean bullets that might be zombie? (Already handled in game loop)
+    }, 60000); // Check every 1 minute
+    console.log("🧹 [Game] Cleaning Process started...");
+}
+startCleanupProcess();
 
 // GAME LOOP (24 FPS)
 setInterval(async () => {

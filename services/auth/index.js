@@ -56,6 +56,34 @@ app.get('/health', (req, res) => {
     });
 });
 
+// --- TASK SCHEDULING (CRON JOB) ---
+// Chương ?: Tự động hóa
+function startCronJobs() {
+    setInterval(() => {
+        const now = new Date();
+        const timeString = `${now.getHours()}:${now.getMinutes()}:${now.getSeconds()}`;
+
+        // 1. Daily Reset (00:00)
+        if (now.getHours() === 0 && now.getMinutes() === 0 && now.getSeconds() === 0) {
+            console.log(`[CRON] ${timeString} - Reseting Daily Leaderboard...`);
+            // await UserModel.updateMany({}, { dailyScore: 0 });
+        }
+
+        // 2. Weekly Reset (Monday 00:00)
+        if (now.getDay() === 1 && now.getHours() === 0 && now.getMinutes() === 0 && now.getSeconds() === 0) {
+            console.log(`[CRON] ${timeString} - Reseting Weekly Leaderboard...`);
+        }
+
+        // 3. Monthly Reset (1st Day 00:00)
+        if (now.getDate() === 1 && now.getHours() === 0 && now.getMinutes() === 0 && now.getSeconds() === 0) {
+            console.log(`[CRON] ${timeString} - Reseting Monthly Leaderboard...`);
+        }
+
+    }, 1000); // Check every second (Simple implementation)
+    console.log("🕒 [Auth] Cron Jobs started...");
+}
+startCronJobs();
+
 // --- API ENDPOINTS ---
 
 // 1. REGISTER
