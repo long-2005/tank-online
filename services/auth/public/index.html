@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Tank War</title>
+  <style>
+    body { margin: 0; background: #1a1a1a; color: white; font-family: 'Segoe UI', sans-serif; overflow: hidden; display: flex; justify-content: center; align-items: center; height: 100vh; }
+    #ui-layer { position: absolute; width: 100%; height: 100%; background: rgba(0,0,0,0.9); display: flex; justify-content: center; align-items: center; z-index: 10; }
+    .panel { background: #2c3e50; padding: 25px; border-radius: 12px; text-align: center; width: 550px; box-shadow: 0 0 30px #000; border: 1px solid #34495e;}
+    #shop-container { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; max-height: 400px; overflow-y: auto; margin: 20px 0; padding-right: 5px; }
+    .skin-card { border: 2px solid #555; padding: 10px; cursor: pointer; border-radius: 8px; background: #34495e; display: flex; flex-direction: column; align-items: center; }
+    .skin-card.selected { border-color: #2ecc71; background: #223a2f; }
+    .skin-card img { width: 70px; margin-bottom: 5px; }
+    .stats-box { font-size: 0.8em; color: #bdc3c7; width: 100%; background: rgba(0,0,0,0.2); padding: 5px; border-radius: 4px; box-sizing: border-box; margin-top: 5px;}
+    .stat-row { display: flex; justify-content: space-between; }
+    .val-high { color: #e74c3c; font-weight: bold; } 
+    .val-mid { color: #f1c40f; font-weight: bold; } 
+    .val-good { color: #2ecc71; font-weight: bold; } 
+    input { padding: 12px; width: 80%; margin-bottom: 15px; border-radius: 4px; border: none; }
+    button { padding: 12px; width: 100%; background: #e67e22; border: none; color: white; font-weight: bold; cursor: pointer; border-radius: 4px; font-size: 16px;}
+    
+    #hud { position: absolute; width: 100%; height: 100%; pointer-events: none; display: none;}
+    #money-display { position: absolute; top: 15px; left: 15px; font-size: 24px; font-weight: bold; text-shadow: 2px 2px 4px black; color: #f1c40f; pointer-events: auto;}
+    
+    #btn-quit {
+        position: absolute; top: 15px; right: 15px;
+        width: 40px; height: 40px;
+        background: #e74c3c; color: white; border: none;
+        border-radius: 8px; font-size: 20px; font-weight: bold;
+        cursor: pointer; pointer-events: auto; padding: 0;
+        box-shadow: 0 4px 0 #c0392b; /* 3D effect shadow */
+        transition: all 0.1s;
+    }
+    #btn-quit:active {
+        box-shadow: 0 0 0 #c0392b;
+        transform: translateY(4px);
+    }
+
+    /* Custom Scrollbar */
+    ::-webkit-scrollbar { width: 8px; }
+    ::-webkit-scrollbar-track { background: #2c3e50; }
+    ::-webkit-scrollbar-thumb { background: #7f8c8d; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: #95a5a6; }
+
+    canvas { background: #bdc3c7; border: 3px solid #555; box-shadow: 0 0 50px black; }
+  </style>
+  <script src="https://cdn.socket.io/4.8.1/socket.io.min.js"></script>
+</head>
+<body>
+
+    <div id="hud">
+        <div id="money-display"> <span id="game-money">0</span> $</div>
+        <div id="ping-display" style="position: absolute; top: 15px; right: 70px; font-weight: bold; font-size: 18px; color: #2ecc71;">Ping: 0ms</div>
+        <button id="btn-quit" onclick="leaveGame()">✕</button>
+    </div>
+
+    <div id="ui-layer">
+        <div id="login-screen" class="panel">
+            <h1 style="color:#e67e22">TANK BATTLEFIELD</h1>
+            <p>Sẵn sàng chiến đấu?</p>
+            <input type="text" id="username" placeholder="Tên đăng nhập...">
+            <input type="password" id="password" placeholder="Mật khẩu..." style="margin-top:-10px;">
+            <div style="display:flex; gap:10px;">
+                <button onclick="login()" style="background:#e67e22">ĐĂNG NHẬP</button>
+                <button onclick="register()" style="background:#2ecc71">ĐĂNG KÝ</button>
+            </div>
+        </div>
+
+        <div id="menu-screen" class="panel" style="display:none;">
+            <h2>GARAGE</h2>
+            <p>Tài sản: <span id="user-money" style="color:#f1c40f; font-size: 1.4em;">0</span> $</p>
+            <div id="shop-container"></div>
+            <div id="shop-container"></div>
+            <div style="display:flex; justify-content:center; gap:10px; margin-top:10px;">
+                <button onclick="playGame()" style="background:#27ae60; flex:2;">VÀO TRẬN ĐẤU</button>
+                <button onclick="showLeaderboard()" style="background:#8e44ad; flex:1;">🏆 BXH</button>
+            </div>
+        </div>
+        
+        <div id="leaderboard-screen" class="panel" style="display:none;">
+            <h2>🏆 BẢNG XẾP HẠNG</h2>
+            <div id="leaderboard-list" style="text-align:left; max-height: 300px; overflow-y:auto;">Loading...</div>
+            <button onclick="closeLeaderboard()" style="margin-top:15px; background:#95a5a6;">QUAY LẠI</button>
+        </div>
+
+        <div id="lobby-screen" class="panel" style="display:none; width: 600px;">
+            <h2>🏙️ DANH SÁCH PHÒNG</h2>
+            <div style="display:flex; gap:10px; margin-bottom: 20px;">
+                <input type="text" id="room-name-input" placeholder="Tên phòng..." style="padding:10px; width:60%;">
+                <button onclick="createRoom()" style="background:#27ae60; width:auto; flex:1;">+ Tạo Phòng</button>
+                <button onclick="fetchRooms()" style="background:#3498db; width:auto; flex:1;">🔄 Làm mới</button>
+            </div>
+            <div id="room-list-container" style="max-height: 300px; overflow-y:auto; background:rgba(0,0,0,0.3); border-radius:5px; padding:10px;">
+                <p>Đang tải...</p>
+            </div>
+            <button onclick="logoutToMenu()" style="margin-top:15px; background:#e74c3c;">QUAY LẠI MENU</button>
+        </div>
+    </div>
+
+    <canvas id="canvas"></canvas>
+
+    <script>
+        var socket = null; // Khởi tạo sau khi login
+        var canvas = document.getElementById('canvas');
+        canvas.width = 800; canvas.height = 600;
+        var ctx = canvas.getContext('2d');
+
+        const SKIN_LIST = ['tank', 'tank1', 'tank2', 'tank3', 'tank4', 'tank5'];
+        const skinImages = {};
+        SKIN_LIST.forEach(name => {
+            skinImages[name] = new Image();
+            skinImages[name].src = `/images/${name}.png`;
+        });
+        
+        const shieldImg = new Image(); 
+        shieldImg.src = '/images/shield.png';
+        const shieldIconImg = new Image();
+        shieldIconImg.src = '/images/shieldicon.png';
+        
+        const wallImg = new Image(); 
+        wallImg.src = '/images/wall.png'; // Updated to .png
+
+        wallImg.onerror = () => console.error("Could not load wall.png");
+
+        const bgImg = new Image(); 
+        bgImg.src = '/images/bg.jpg?v=3';
+        bgImg.onerror = () => {
+            console.error("Could not load bg.jpg");
+            // Set a flag or fallback? We handle it in draw loop.
+        };
+
+        let myUser = null;
+        let tankConfig = {};
+        let mapData = []; 
+        
+        // Init Map Immediately
+        const ROWS=30; const COLS=40;
+        for (let r = 0; r < ROWS; r++) {
+            let row = [];
+            for (let c = 0; c < COLS; c++) {
+            if (r === 0 || r === ROWS - 1 || c === 0 || c === COLS - 1) row.push(1);
+            else if (r % 6 === 0 && c % 6 === 0) row.push(1);
+            else if (r % 6 === 0 && (c - 1) % 6 === 0) row.push(1);
+            else if ((r - 1) % 6 === 0 && c % 6 === 0) row.push(1);
+            else if ((r - 1) % 6 === 0 && (c - 1) % 6 === 0) row.push(1);
+            else row.push(0);
+            }
+            mapData.push(row);
+        }
+        // Clean Zone
+        const clearZone = (r1, c1, r2, c2) => {
+            for (let rr = r1; rr <= r2; rr++) {
+            for (let cc = c1; cc <= c2; cc++) {
+                if (rr > 0 && rr < ROWS - 1 && cc > 0 && cc < COLS - 1) mapData[rr][cc] = 0;
+            }
+            }
+        };
+        clearZone(1, 1, 5, 5); clearZone(1, 34, 5, 38); clearZone(24, 1, 28, 5); clearZone(24, 34, 28, 38); clearZone(12, 17, 17, 22);
+        
+        let TILE_SIZE = 20;
+
+        async function postAPI(url, data) {
+            try {
+                const res = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                });
+                const json = await res.json();
+                if (!res.ok) throw new Error(json.error || 'Lỗi Server');
+                return json;
+            } catch (e) {
+                alert(e.message);
+                return null;
+            }
+        }
+
+        async function showLeaderboard() {
+            document.getElementById('menu-screen').style.display = 'none';
+            document.getElementById('leaderboard-screen').style.display = 'block';
+            
+            const list = document.getElementById('leaderboard-list');
+            list.innerHTML = 'Loading...';
+
+            try {
+                const res = await fetch('/api/leaderboard');
+                const data = await res.json();
+                
+                if (data && data.length > 0) {
+                    let html = '<ol style="padding-left: 20px;">';
+                    data.forEach(u => {
+                        html += `<li style="margin-bottom:5px; border-bottom:1px solid #555; padding:5px;">
+                            <span style="font-weight:bold; color:#f1c40f">${u.username}</span> 
+                            - Skin: ${u.skins.length} 
+                            - Money: <span style="color:#2ecc71">${u.money}$</span>
+                        </li>`;
+                    });
+                    html += '</ol>';
+                    list.innerHTML = html;
+                } else {
+                    list.innerHTML = 'Chưa có dữ liệu';
+                }
+            } catch(e) {
+                list.innerHTML = 'Lỗi tải BXH';
+            }
+        }
+
+        function closeLeaderboard() {
+            document.getElementById('leaderboard-screen').style.display = 'none';
+            document.getElementById('menu-screen').style.display = 'block';
+        }
+
+        async function login() {
+            let u = document.getElementById('username').value;
+            let p = document.getElementById('password').value;
+            if(!u || !p) return alert("Vui lòng nhập tên và mật khẩu!");
+
+            const data = await postAPI('/api/login', { username: u, password: p });
+            if (data) {
+                myUser = data.user;
+                tankConfig = data.config;
+                // Config Game Socket
+                const gameUrl = data.gameServerUrl; // e.g. "http://localhost:6000"
+                connectGameSocket(gameUrl);
+                
+                // Switch Screen
+                // Wait for Map data? We can render shop without map.
+                renderShop();
+                document.getElementById('login-screen').style.display = 'none';
+                document.getElementById('menu-screen').style.display = 'block';
+            }
+        }
+
+        async function register() {
+            let u = document.getElementById('username').value;
+            let p = document.getElementById('password').value;
+            if(!u || !p) return alert("Vui lòng nhập tên và mật khẩu!");
+            
+            const data = await postAPI('/api/register', { username: u, password: p });
+            if (data) alert(data.message);
+        }
+        
+        // --- BIẾN TOÀN CỤC CHO GAME LOOP ---
+        let latestServerData = null; // Chứa dữ liệu mới nhất từ Server gửi về (24 lần/giây)
+        // --- KẾT NỐI SOCKET ---
+        function connectGameSocket(url) {
+            let targetUrl = url || window.location.origin;
+            console.log("Connecting to Game Server:", targetUrl);
+            socket = io(targetUrl);
+
+            // --- LOGOUT LOGIC ---
+            window.logoutToMenu = function() {
+                if(socket) socket.disconnect();
+                socket = null;
+                document.getElementById('lobby-screen').style.display = 'none';
+                document.getElementById('menu-screen').style.display = 'block';
+            };
+            
+            socket.on('connect', () => {
+                console.log("Connected to Game Socket!");
+                // Thay vì join luôn, ta hiện Lobby
+                document.getElementById('login-screen').style.display = 'none'; // Hide login screen
+                document.getElementById('menu-screen').style.display = 'none'; // Hide menu screen
+                document.getElementById('lobby-screen').style.display = 'block'; // Show lobby screen
+                fetchRooms();
+                
+                // Ping Loop
+                setInterval(() => {
+                    const start = Date.now();
+                    socket.emit('ping_check', () => { 
+                        const latency = Date.now() - start;
+                        currentPing = latency;
+                        
+                        // Update UI HTML directly
+                        const pingEl = document.getElementById('ping-display');
+                        if(pingEl) {
+                            pingEl.innerText = `Ping: ${currentPing}ms`;
+                            pingEl.style.color = currentPing < 100 ? '#2ecc71' : (currentPing < 200 ? '#f1c40f' : '#e74c3c');
+                        }
+                    });
+                }, 1000); // Changed from 2000 to 1000 to match original ping interval
+            });
+
+            socket.on('room_list', (rooms) => {
+                let html = '<table style="width:100%; text-align:left;"><tr><th>Tên phòng</th><th>Sỉ số</th><th></th></tr>';
+                rooms.forEach(r => {
+                    html += `<tr>
+                        <td>${r.name}</td>
+                        <td>${r.count}/${r.max}</td>
+                        <td><button onclick="joinRoom('${r.id}')" ${r.count>=r.max?'disabled':''}>Vào</button></td>
+                    </tr>`;
+                });
+                html += '</table>';
+                if(rooms.length===0) html = '<p>Chưa có phòng nào.</p>';
+                document.getElementById('room-list-container').innerHTML = html;
+            });
+
+            socket.on('create_room_success', (roomId) => {
+                joinRoom(roomId); // Tự động vào phòng mới tạo
+            });
+
+            socket.on('join_success', (data) => {
+                // Vào game thành công
+                mapData = data.map; // Cập nhật map từ room (changed from MAP to mapData)
+                document.getElementById('lobby-screen').style.display = 'none';
+                document.getElementById('ui-layer').style.display = 'none'; // FIX: Hide the MAIN overlay layer!
+                document.getElementById('hud').style.display = 'block'; // Show HUD
+                // document.getElementById('game-container').style.display = 'block'; // Assuming canvas is always visible, or this refers to a wrapper
+                // gameParams.roomId = data.roomId; // No gameParams in original code
+                isPlaying = true; // Start game state
+                gameLoop(); // Start game loop (changed from startGameLoop)
+            });
+
+            socket.on('join_error', (msg) => alert(msg));
+            
+            // ... (xử lý state game server gửi về)
+            socket.on('state', (data) => { // Changed from state to data to match original
+               if(!isPlaying) return;
+               latestServerData = data; // Cập nhật dữ liệu mới nhất
+            });
+            
+            socket.on('kill_reward', (amount) => {
+                 myUser.money += amount;
+                 updateMoneyUI();
+            });
+        }
+
+        function fetchRooms() {
+            if(socket) socket.emit('get_rooms');
+        }
+
+        function createRoom() {
+            let name = document.getElementById('room-name-input').value;
+            if(!name) return alert("Nhập tên phòng!");
+            socket.emit('create_room', name);
+        }
+
+        function joinRoom(id) {
+            socket.emit('join_room', { 
+                roomId: id, 
+                username: myUser.username, 
+                skin: myUser.currentSkin 
+            });
+        }
+        let animationId = null;      // ID của vòng lặp vẽ (để dừng khi thoát)
+        let currentPing = 0;         // Biến lưu Ping hiện tại
+
+        // --- SHOP & GAME LOGIC ---
+        
+        function updateMoneyUI() {
+            if(document.getElementById('user-money')) document.getElementById('user-money').innerText = myUser.money;
+            if(document.getElementById('game-money')) document.getElementById('game-money').innerText = myUser.money;
+        }
+
+        // --- SHOP ACTIONS (API) ---
+        async function buySkin(skinName) {
+             const data = await postAPI('/api/shop/buy', { username: myUser.username, skinName });
+             if (data) {
+                 myUser = data.user;
+                 renderShop();
+                 updateMoneyUI();
+             }
+        }
+        
+        async function selectSkin(skinName) {
+             const data = await postAPI('/api/shop/select', { username: myUser.username, skinName });
+             if (data) {
+                 myUser = data.user;
+                 renderShop();
+             }
+        }
+
+        function renderShop() {
+            const container = document.getElementById('shop-container');
+            container.innerHTML = '';
+            SKIN_LIST.forEach(skinName => {
+                let info = tankConfig[skinName];
+                if (!info) return;
+                let owned = myUser.skins.includes(skinName);
+                let isSelected = (myUser.currentSkin === skinName);
+                
+                let card = document.createElement('div');
+                card.className = `skin-card ${isSelected ? 'selected' : ''}`;
+                card.innerHTML = `
+                    <div style="font-weight:bold; margin-bottom:5px; color:#fff">${info.name}</div>
+                    <img src="/images/${skinName}.png" onerror="this.src='https://via.placeholder.com/64'">
+                    <div class="stats-box">
+                        <div class="stat-row"><span>⚔️ Damage:</span> <span class="val-high">${info.damage}</span></div>
+                        <div class="stat-row"><span>🛡️ HP:</span> <span class="val-good">${info.hp}</span></div>
+                    </div>
+                    <div style="color:${owned ? "#2ecc71" : "#e74c3c"}; font-weight:bold; margin-top:5px;">
+                        ${owned ? (isSelected ? "ĐANG DÙNG" : "ĐÃ CÓ") : `GIÁ: ${info.price}$`}
+                    </div>
+                `;
+                card.onclick = () => {
+                    if (owned) selectSkin(skinName);
+                    else if (myUser.money >= info.price && confirm(`Mua ${info.name}?`)) buySkin(skinName);
+                };
+                container.appendChild(card);
+            });
+            updateMoneyUI();
+        }
+
+        function playGame() {
+            document.getElementById('ui-layer').style.display = 'none';
+            document.getElementById('hud').style.display = 'block';
+            if(socket) socket.emit('join_game', { username: myUser.username, skin: myUser.currentSkin });
+            
+            // BẮT ĐẦU VÒNG LẶP VẼ (60 FPS)
+            isPlaying = true;
+            gameLoop(); 
+        }
+
+        function leaveGame() {
+            isPlaying = false;
+            cancelAnimationFrame(animationId); // Dừng vẽ để tiết kiệm pin/CPU
+            // if(socket) socket.emit('leave_game'); // Optional
+            document.getElementById('hud').style.display = 'none';
+            document.getElementById('ui-layer').style.display = 'flex';
+            document.getElementById('menu-screen').style.display = 'block';
+        }
+
+        let isPlaying = false;
+        let move = { up:0, down:0, left:0, right:0 };
+        window.onkeydown = (e) => {
+            if(!isPlaying) return;
+            if(e.key.toLowerCase()==='w') move.up=1; 
+            if(e.key.toLowerCase()==='s') move.down=1;
+            if(e.key.toLowerCase()==='a') move.left=1; 
+            if(e.key.toLowerCase()==='d') move.right=1;
+            if(e.code==='Space') socket.emit('shoot');
+        };
+        window.onkeyup = (e) => {
+            if(e.key.toLowerCase()==='w') move.up=0; 
+            if(e.key.toLowerCase()==='s') move.down=0;
+            if(e.key.toLowerCase()==='a') move.left=0; 
+            if(e.key.toLowerCase()==='d') move.right=0;
+        };
+        // Gửi input lên Server (Vẫn giữ 60 lần/giây để phản hồi nhanh)
+        setInterval(() => { if(isPlaying && socket) socket.emit('movement', move); }, 1000/60);
+
+        // --- HÀM VẼ (RENDER LOOP) ---
+        // Tại sao dùng requestAnimationFrame?
+        // 1. Nó đồng bộ với tần số quét màn hình (thường là 60Hz), giúp hình ảnh mượt nhất.
+        // 2. Tự động dừng khi người dùng chuyển tab (tiết kiệm hiệu năng).
+        function gameLoop() {
+            if (!isPlaying) return;
+            
+            updateAndDraw(); // Hàm vẽ chính
+            
+            animationId = requestAnimationFrame(gameLoop); // Lặp lại liên tục
+        }
+
+        // --- CẤU TRÚC LƯU TRỮ XE TĂNG CLIENT ---
+        // Dùng để lưu vị trí hiện tại phục vụ cho việc làm mượt (Interpolation)
+        let clientTanks = {}; 
+
+        function updateAndDraw() {
+            // --- RESET CONTEXT ---
+            ctx.globalAlpha = 1.0; 
+            ctx.filter = 'none';
+            ctx.clearRect(0,0,800,600); // Xóa màn hình cũ
+
+            // 1. VẼ NỀN (BACKGROUND)
+            ctx.save();
+            if (bgImg.complete && bgImg.naturalWidth !== 0) {
+                ctx.drawImage(bgImg, 0, 0, 800, 600);
+            } else {
+                ctx.fillStyle = '#ebd5b3'; // Màu cát sáng hơn (#cdaa7d hơi tối)
+                ctx.fillRect(0, 0, 800, 600);
+            }
+            
+            // Vẽ lưới (Grid) sáng màu hơn để dễ nhìn
+            ctx.strokeStyle = 'rgba(255,255,255,0.2)'; 
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            for(let x=0; x<=800; x+=TILE_SIZE) { ctx.moveTo(x,0); ctx.lineTo(x,600); }
+            for(let y=0; y<=600; y+=TILE_SIZE) { ctx.moveTo(0,y); ctx.lineTo(800,y); }
+            ctx.stroke();
+            ctx.restore();
+            
+            // 2. VẼ TƯỜNG (OBSTACLES)
+            if (mapData && mapData.length > 0) {
+                for (let r = 0; r < mapData.length; r++) {
+                    for (let c = 0; c < mapData[r].length; c++) {
+                        if (mapData[r][c] === 1) {
+                            if (wallImg.complete && wallImg.naturalWidth !== 0) 
+                                ctx.drawImage(wallImg, c*TILE_SIZE, r*TILE_SIZE, TILE_SIZE, TILE_SIZE);
+                            else {
+                                ctx.fillStyle = '#7f8c8d'; ctx.fillRect(c*TILE_SIZE, r*TILE_SIZE, TILE_SIZE, TILE_SIZE);
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Nếu chưa có dữ liệu từ server thì không vẽ tank/đạn
+            if (!latestServerData) return;
+
+            // DRAW SHIELD ITEM
+            if (latestServerData.shield && latestServerData.shield.active) {
+                // Draw rotating effect or pulsing? Just simple draw first.
+                let sx = latestServerData.shield.x;
+                let sy = latestServerData.shield.y;
+                let pulsate = 1 + Math.sin(Date.now() / 200) * 0.1;
+                let size = 32 * pulsate;
+                
+                if(shieldIconImg.complete) {
+                    ctx.drawImage(shieldIconImg, sx - size/2, sy - size/2, size, size);
+                } else {
+                    ctx.fillStyle = 'cyan';
+                    ctx.beginPath(); ctx.arc(sx, sy, 15, 0, Math.PI*2); ctx.fill();
+                }
+            }
+
+            // 3. VẼ & LÀM MƯỢT XE TĂNG (PLAYERS)
+            for(let id in latestServerData.players) {
+                let pServer = latestServerData.players[id];
+                
+                // --- KỸ THUẬT LÀM MƯỢT (INTERPOLATION) ---
+                // Nếu đây là lần đầu thấy tank này, khởi tạo vị trí ngay lập tức
+                if (!clientTanks[id]) {
+                    clientTanks[id] = { x: pServer.x, y: pServer.y, angle: pServer.angle };
+                }
+
+                let pClient = clientTanks[id];
+                
+                // Lerp (Linear Interpolation): Di chuyển từ từ vị trí hiện tại về vị trí Server gửi
+                // Công thức: Mới = Cũ + (Đích - Cũ) * Hệ số (0.1 -> 0.3)
+                // Hệ số càng nhỏ càng mượt nhưng trễ (lag), càng lớn càng nhanh nhưng giật. 0.2 là cân bằng.
+                let lerpFactor = 0.2; 
+                pClient.x += (pServer.x - pClient.x) * lerpFactor;
+                pClient.y += (pServer.y - pClient.y) * lerpFactor;
+                
+                // Làm mượt cả góc quay (Angle)
+                // Xử lý trường hợp quay qua mốc 0-360 độ để không bị xoay vòng
+                let diffAngle = pServer.angle - pClient.angle;
+                while (diffAngle > Math.PI) diffAngle -= 2 * Math.PI;
+                while (diffAngle < -Math.PI) diffAngle += 2 * Math.PI;
+                pClient.angle += diffAngle * lerpFactor;
+
+                // --- VẼ TANK ---
+                ctx.save();
+                ctx.translate(pClient.x, pClient.y);
+                ctx.rotate(pClient.angle);
+                
+                let img = skinImages[pServer.skin] || skinImages['tank'];
+                
+                if (img && img.complete && img.naturalWidth !== 0) {
+                    let ratio = img.naturalWidth / img.naturalHeight;
+                    let drawW = 64; let drawH = 64;
+                    if (ratio > 1) drawH = 64 / ratio; else drawW = 64 * ratio;
+                    ctx.drawImage(img, -drawW/2, -drawH/2, drawW, drawH);
+                } else {
+                    ctx.fillStyle = 'blue'; ctx.fillRect(-20, -20, 40, 40);
+                    ctx.fillStyle = 'black'; ctx.fillRect(0, -5, 30, 10);
+                }
+
+                // DRAW SHIELD EFFECT ON PLAYER
+                if (pServer.invincibleUntil && pServer.invincibleUntil > latestServerData.serverTime) {
+                     ctx.save();
+                     // Hiệu ứng xoay
+                     let angle = (Date.now() / 500) % (Math.PI * 2);
+                     ctx.rotate(angle);
+                     
+                     if (shieldImg.complete && shieldImg.naturalWidth !== 0) {
+                        let size = 96; 
+                        ctx.drawImage(shieldImg, -size/2, -size/2, size, size);
+                     } else {
+                        ctx.strokeStyle = '#00ffff'; ctx.lineWidth = 3;
+                        ctx.beginPath(); ctx.arc(0, 0, 40, 0, Math.PI*2); ctx.stroke();
+                     }
+                     ctx.restore();
+                }
+
+                ctx.restore();
+
+                // --- VẼ THANH MÁU & TÊN ---
+                let drawX = pClient.x;
+                let drawY = pClient.y;
+
+                ctx.fillStyle = 'white'; ctx.font='10px Arial'; ctx.fillText(pServer.username, drawX-20, drawY-40);
+                let maxHp = pServer.maxHp || 100;
+                
+                // Khung máu đỏ (mất máu)
+                ctx.fillStyle = 'red'; ctx.fillRect(drawX-32, drawY-35, 64, 5);
+                // Máu hiện tại (xanh lá)
+                ctx.fillStyle = '#0f0'; ctx.fillRect(drawX-32, drawY-35, (pServer.hp/maxHp)*64, 5);
+
+                // Thanh nạp đạn (Chỉ hiện cho bản thân mình)
+                if (id === socket.id) {
+                    let timeSinceShot = latestServerData.serverTime - pServer.lastShotTime;
+                    let reloadPercent = timeSinceShot / pServer.reloadTime;
+                    if (reloadPercent > 1) reloadPercent = 1;
+                    
+                    ctx.fillStyle = '#555'; ctx.fillRect(drawX-32, drawY-28, 64, 3);
+                    ctx.fillStyle = 'yellow'; ctx.fillRect(drawX-32, drawY-28, reloadPercent*64, 3);
+                }
+            }
+
+            // Xóa tank không còn tồn tại (người chơi thoát)
+            for (let id in clientTanks) {
+                if (!latestServerData.players[id]) delete clientTanks[id];
+            }
+            
+            // 4. VẼ ĐẠN (BULLETS)
+            // Đạn bay nhanh nên có thể vẽ trực tiếp từ server data hoặc nội suy nếu muốn siêu mượt
+            // Ở đây vẽ trực tiếp cho đơn giản và chính xác vị trí va chạm
+            ctx.fillStyle = '#ff0';
+            latestServerData.bullets.forEach(b => {
+                ctx.beginPath(); ctx.arc(b.x, b.y, 5, 0, Math.PI*2); ctx.fill();
+            });
+
+            // 5. REMOVED CANVAS PING DRAWING (Moved to HTML UI)
+        }
+
+    </script>
+</body>
+</html>

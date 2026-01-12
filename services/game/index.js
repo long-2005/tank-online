@@ -8,13 +8,24 @@ const PORT = process.env.PORT || 6000;
 // --- HTTP SERVER (Native Node.js for Health Check & Logging) ---
 // Chương 8: Log Management - Log request vào console
 // Chương 8: Health Monitoring - Endpoint /health
+const logBuffer = [];
+function addLog(msg) {
+    const logEntry = `[${new Date().toISOString()}] ${msg}`;
+    logBuffer.push(logEntry);
+    if (logBuffer.length > 50) logBuffer.shift(); // Keep last 50 logs
+    console.log(logEntry);
+}
 const httpServer = http.createServer((req, res) => {
     // Logging
-    console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+    // console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`); // Removed direct log
+
+    if (req.url !== '/api/logs' && req.url !== '/health') {
+        addLog(`${req.method} ${req.url}`);
+    }
 
     // Health Check
     if (req.url === '/health') {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
         res.end(JSON.stringify({
             status: 'UP',
             service: 'Game Service',
@@ -22,6 +33,13 @@ const httpServer = http.createServer((req, res) => {
             timestamp: Date.now(),
             dbConnection: useDB ? 'Connected' : 'Disconnected (RAM Mode)'
         }));
+        return;
+    }
+
+    // Log API
+    if (req.url === '/api/logs') {
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify(logBuffer));
         return;
     }
 
@@ -45,11 +63,16 @@ httpServer.listen(PORT, () => {
 // Tự động sao lưu dữ liệu RAM
 function backupData() {
     try {
-        // Game Service holds 'players' in memory during a match.
-        // We can dump 'players' state.
-        if (Object.keys(players).length > 0) {
-            fs.writeFileSync('backup_gamestate.json', JSON.stringify(players, null, 2));
-            console.log(`[BACKUP] Saved ${Object.keys(players).length} players state.`);
+        if (typeof rooms === 'undefined') return;
+
+        let allPlayers = {};
+        for (let roomId in rooms) {
+            Object.assign(allPlayers, rooms[roomId].players);
+        }
+
+        if (Object.keys(allPlayers).length > 0) {
+            fs.writeFileSync('backup_gamestate.json', JSON.stringify(allPlayers, null, 2));
+            console.log(`[BACKUP] Saved ${Object.keys(allPlayers).length} players state.`);
         }
     } catch (e) {
         console.error("[BACKUP ERROR]", e);
@@ -147,222 +170,237 @@ function checkWallCollision(x, y) {
     return false;
 }
 
-function checkTankCollision(id, x, y) {
-    const TANK_RADIUS = 22; const MIN_DIST = TANK_RADIUS * 2;
-    for (let otherId in players) {
-        if (otherId === id) continue;
-        let other = players[otherId];
-        if (Math.sqrt((x - other.x) ** 2 + (y - other.y) ** 2) < MIN_DIST) return true;
+// --- ROOM SYSTEM ---
+class GameRoom {
+    constructor(id, name, ownerId) {
+        this.id = id;
+        this.name = name;
+        this.ownerId = ownerId;
+        this.players = {};
+        this.bullets = [];
+        this.shieldItem = { x: -100, y: -100, active: false, nextSpawnTime: Date.now() };
+        this.maxPlayers = 4;
+        this.map = MAP;
     }
-    return false;
-}
 
-// STATE
-let players = {};
-let bullets = [];
+    addPlayer(socket, userData) {
+        if (Object.keys(this.players).length >= this.maxPlayers) return false;
 
-io.on('connection', (socket) => {
-    // Note: In a real architecture, we would verify a JWT token here passed in handshake
-    // For now, we trust the client 'join_game' event with their username/skin config
-
-    socket.on('join_game', (data) => {
-        // data = { username, skin } (Sent from client after HTTP Login)
-        if (!data || !data.username) return;
-
-        // Validate skin?
-        let skinName = data.skin || 'tank';
-        // (Optional: Could duplicate skin ownership check here by calling DB, but skipping for perf)
-
-        let stats = TANK_CONFIG[skinName] || TANK_CONFIG['tank'];
-
-        // Spawn Logic
         let spawnX, spawnY, attempts = 0;
         do { spawnX = Math.random() * 700 + 50; spawnY = Math.random() * 500 + 50; attempts++; }
-        while ((checkWallCollision(spawnX, spawnY) || checkTankCollision(socket.id, spawnX, spawnY)) && attempts < 200);
+        while ((checkWallCollision(spawnX, spawnY) || this.checkTankCollision(socket.id, spawnX, spawnY)) && attempts < 200);
 
-        players[socket.id] = {
-            username: data.username,
-            x: spawnX, y: spawnY, angle: 0, skin: skinName,
+        let skin = (userData.skin) ? userData.skin : 'tank';
+        let stats = TANK_CONFIG[skin] || TANK_CONFIG['tank'];
+
+        this.players[socket.id] = {
+            username: userData.username,
+            x: spawnX, y: spawnY, angle: 0, skin: skin,
             hp: stats.hp, maxHp: stats.hp, speed: stats.speed, damage: stats.damage,
             recoil: stats.recoil, reloadTime: stats.reloadTime, lastShotTime: 0,
-            lastActive: Date.now() // Track AFK
+            lastActive: Date.now(),
+            invincibleUntil: 0
         };
-
-        // Emit init config (Map/TileSize) just in case client needs it? 
-        // Client already got it from Auth, but good to be safe.
-    });
-
-    socket.on('join_game', (data) => {
-        // ... (existing join logic) we can leave this here or just insert before it. 
-        // Actually, let's look at the target content to place it correctly.
-    });
-
-    socket.on('ping_check', (cb) => {
-        if (typeof cb === 'function') cb();
-    });
-
-    socket.on('disconnect', () => delete players[socket.id]);
-
-    socket.on('movement', (data) => {
-        let p = players[socket.id];
-        if (!p) return;
-        let rotateSpeed = 0.08;
-        if (data.left) p.angle -= rotateSpeed;
-        if (data.right) p.angle += rotateSpeed;
-        let moveStep = 0;
-        if (data.up) moveStep = p.speed;
-        if (data.down) moveStep = -p.speed;
-
-        if (moveStep !== 0) {
-            let dx = Math.cos(p.angle) * moveStep;
-            let dy = Math.sin(p.angle) * moveStep;
-            if (!checkWallCollision(p.x + dx, p.y) && !checkTankCollision(socket.id, p.x + dx, p.y)) p.x += dx;
-            if (!checkWallCollision(p.x, p.y + dy) && !checkTankCollision(socket.id, p.x, p.y + dy)) p.y += dy;
-            p.lastActive = Date.now();
-        }
-    });
-
-    socket.on('shoot', () => {
-        let p = players[socket.id];
-        if (!p) return;
-        let now = Date.now();
-        if (now - p.lastShotTime < p.reloadTime) return;
-        p.lastShotTime = now;
-        bullets.push({
-            x: p.x + Math.cos(p.angle) * 35, y: p.y + Math.sin(p.angle) * 35,
-            speedX: Math.cos(p.angle) * 15, speedY: Math.sin(p.angle) * 15,
-            damage: p.damage, ownerId: socket.id
-        });
-        let recoilX = p.x - Math.cos(p.angle) * p.recoil;
-        let recoilY = p.y - Math.sin(p.angle) * p.recoil;
-        if (!checkWallCollision(recoilX, recoilY) && !checkTankCollision(socket.id, recoilX, recoilY)) {
-            p.x = recoilX; p.y = recoilY;
-        }
-    });
-});
-
-
-// --- SHIELD ITEM LOGIC ---
-let shieldItem = { x: -100, y: -100, active: false, nextSpawnTime: Date.now() };
-
-function spawnShield() {
-    let attempts = 0;
-    let spawnX, spawnY;
-    do {
-        spawnX = Math.random() * 700 + 50;
-        spawnY = Math.random() * 500 + 50;
-        attempts++;
-    } while ((checkWallCollision(spawnX, spawnY)) && attempts < 100);
-
-    if (attempts < 100) {
-        shieldItem.x = spawnX;
-        shieldItem.y = spawnY;
-        shieldItem.active = true;
+        return true;
     }
-}
 
+    removePlayer(socketId) {
+        delete this.players[socketId];
+    }
 
-
-// --- CLEANING PROCESS (Background Task) ---
-// Chương ?: Tối ưu tài nguyên
-function startCleanupProcess() {
-    setInterval(() => {
-        const now = Date.now();
-        const AFK_TIMEOUT = 5 * 60 * 1000; // 5 mins
-
-        for (let id in players) {
-            let p = players[id];
-            if (now - p.lastActive > AFK_TIMEOUT) {
-                console.log(`[CLEANUP] Kicking AFK player: ${p.username} (${id})`);
-                // Close socket
-                if (io.sockets.sockets.get(id)) {
-                    io.sockets.sockets.get(id).disconnect(true);
-                }
-                delete players[id];
-            }
+    checkTankCollision(id, x, y) {
+        const TANK_RADIUS = 22; const MIN_DIST = TANK_RADIUS * 2;
+        for (let otherId in this.players) {
+            if (otherId === id) continue;
+            let other = this.players[otherId];
+            if (!other) continue;
+            if (Math.sqrt((x - other.x) ** 2 + (y - other.y) ** 2) < MIN_DIST) return true;
         }
+        return false;
+    }
 
-        // Also clean bullets that might be zombie? (Already handled in game loop)
-    }, 60000); // Check every 1 minute
-    console.log("🧹 [Game] Cleaning Process started...");
-}
-startCleanupProcess();
-
-// GAME LOOP (24 FPS)
-setInterval(async () => {
-    try {
+    update() {
         let now = Date.now();
-
-        // 1. Spawn Shield logic
-        if (!shieldItem.active && now >= shieldItem.nextSpawnTime) {
-            spawnShield();
-        }
-
-        // 2. Check Shield Pickup (khoảng cách 40px)
-        if (shieldItem.active) {
-            for (let id in players) {
-                let p = players[id];
-                if (!p) continue;
-                if (Math.sqrt((p.x - shieldItem.x) ** 2 + (p.y - shieldItem.y) ** 2) < 40) {
-                    shieldItem.active = false;
-                    shieldItem.nextSpawnTime = now + 60000; // 1 phút sau spawn lại
-                    p.invincibleUntil = now + 3000; // Bất tử 3s
+        // Shield
+        if (!this.shieldItem.active && now >= this.shieldItem.nextSpawnTime) this.spawnShield();
+        if (this.shieldItem.active) {
+            for (let id in this.players) {
+                let p = this.players[id];
+                if (Math.sqrt((p.x - this.shieldItem.x) ** 2 + (p.y - this.shieldItem.y) ** 2) < 40) {
+                    this.shieldItem.active = false;
+                    this.shieldItem.nextSpawnTime = now + 60000;
+                    p.invincibleUntil = now + 3000;
                     break;
                 }
             }
         }
-
-        for (let i = 0; i < bullets.length; i++) {
-            bullets[i].x += bullets[i].speedX; bullets[i].y += bullets[i].speedY;
-            let gridX = Math.floor(bullets[i].x / TILE_SIZE);
-            let gridY = Math.floor(bullets[i].y / TILE_SIZE);
+        // Bullets
+        for (let i = 0; i < this.bullets.length; i++) {
+            let b = this.bullets[i];
+            b.x += b.speedX; b.y += b.speedY;
+            let gridX = Math.floor(b.x / TILE_SIZE);
+            let gridY = Math.floor(b.y / TILE_SIZE);
             if (gridY < 0 || gridY >= ROWS || gridX < 0 || gridX >= COLS || MAP[gridY][gridX] === 1) {
-                bullets.splice(i, 1); i--; continue;
+                this.bullets.splice(i, 1); i--; continue;
             }
             let hit = false;
-            for (let id in players) {
-                if (id === bullets[i].ownerId) continue;
-                let p = players[id];
-                if (!p) continue;
-
-                // Check Invincibility
+            for (let id in this.players) {
+                if (id === b.ownerId) continue;
+                let p = this.players[id];
                 if (p.invincibleUntil && now < p.invincibleUntil) continue;
-
-                if (Math.sqrt((bullets[i].x - p.x) ** 2 + (bullets[i].y - p.y) ** 2) < 25) {
-                    p.hp -= bullets[i].damage; hit = true;
-
-                    if (p.hp <= 0) {
-                        // KILL!
-                        let killerSocketId = bullets[i].ownerId;
-                        let killerName = players[killerSocketId]?.username;
-
-                        if (killerName) {
-                            // Update Money in DB
-                            await addMoney(killerName, 100);
-                            if (io.sockets.sockets.get(killerSocketId)) {
-                                io.to(killerSocketId).emit('kill_reward', 100);
-                            }
-                        }
-
-                        // Respawn
+                if (Math.sqrt((b.x - p.x) ** 2 + (b.y - p.y) ** 2) < 25) {
+                    p.hp -= b.damage; hit = true;
+                    if (p.hp <= 0) { // Respawn Logic
                         let attempts = 0;
                         do { p.x = Math.random() * 700 + 50; p.y = Math.random() * 500 + 50; attempts++; }
-                        while ((checkWallCollision(p.x, p.y) || checkTankCollision(id, p.x, p.y)) && attempts < 200);
-
-                        // Get maxHp if possible (or default)
-                        let stats = TANK_CONFIG[p.skin] || TANK_CONFIG['tank'];
-                        p.hp = stats.hp;
-                        p.invincibleUntil = 0; // Reset invincible on death
+                        while ((checkWallCollision(p.x, p.y) || this.checkTankCollision(id, p.x, p.y)) && attempts < 200);
+                        p.hp = TANK_CONFIG[p.skin].hp;
+                        p.invincibleUntil = 0;
+                        if (io.sockets.sockets.get(b.ownerId)) io.to(b.ownerId).emit('kill_reward', 100);
                     }
                     break;
                 }
             }
-            if (bullets[i].x < 0 || bullets[i].x > 800 || bullets[i].y < 0 || bullets[i].y > 600 || hit) {
-                bullets.splice(i, 1); i--;
+            if (b.x < 0 || b.x > 800 || b.y < 0 || b.y > 600 || hit) { this.bullets.splice(i, 1); i--; }
+        }
+        return { players: this.players, bullets: this.bullets, shield: this.shieldItem };
+    }
+
+    spawnShield() {
+        let attempts = 0, spawnX, spawnY;
+        do { spawnX = Math.random() * 700 + 50; spawnY = Math.random() * 500 + 50; attempts++; }
+        while (checkWallCollision(spawnX, spawnY) && attempts < 100);
+        if (attempts < 100) { this.shieldItem.x = spawnX; this.shieldItem.y = spawnY; this.shieldItem.active = true; }
+    }
+}
+
+// Global Rooms
+const rooms = {};
+rooms['room1'] = new GameRoom('room1', 'room 1', null);
+rooms['room2'] = new GameRoom('room2', 'room 2', null);
+
+io.on('connection', (socket) => {
+    let currentRoomId = null;
+
+    socket.on('get_rooms', () => {
+        let list = Object.values(rooms).map(r => ({
+            id: r.id, name: r.name, count: Object.keys(r.players).length, max: r.maxPlayers
+        }));
+        socket.emit('room_list', list);
+    });
+
+    socket.on('create_room', (roomName) => {
+        let id = 'room_' + Date.now();
+        rooms[id] = new GameRoom(id, roomName || 'Custom Room', socket.id);
+        socket.emit('create_room_success', id);
+    });
+
+    socket.on('join_room', (data) => {
+        const { roomId, username, skin } = data;
+        let room = rooms[roomId];
+        if (room && room.addPlayer(socket, { username, skin })) {
+            currentRoomId = roomId;
+            socket.join(roomId);
+            socket.emit('join_success', { roomId: roomId, map: room.map });
+        } else {
+            socket.emit('join_error', 'Phong day hoac khong ton tai!');
+        }
+    });
+
+    socket.on('leave_room', () => {
+        if (currentRoomId && rooms[currentRoomId]) {
+            rooms[currentRoomId].removePlayer(socket.id);
+            socket.leave(currentRoomId);
+            currentRoomId = null;
+        }
+    });
+
+    socket.on('disconnect', () => {
+        if (currentRoomId && rooms[currentRoomId]) {
+            rooms[currentRoomId].removePlayer(socket.id);
+            if (Object.keys(rooms[currentRoomId].players).length === 0 && rooms[currentRoomId].id.startsWith('room_')) {
+                delete rooms[currentRoomId];
             }
         }
-        io.sockets.emit('state', { players, bullets, shield: shieldItem, serverTime: Date.now() });
-    } catch (e) {
-        console.error("❌ CRITICAL GAME LOOP ERROR:", e);
+    });
+
+    socket.on('movement', (data) => {
+        if (!currentRoomId || !rooms[currentRoomId]) return;
+        let p = rooms[currentRoomId].players[socket.id];
+        if (!p) return;
+        let rotateSpeed = 0.08;
+        if (data.left) p.angle -= rotateSpeed;
+        if (data.right) p.angle += rotateSpeed;
+        if (data.up) moveStep(p, p.speed, currentRoomId);
+        if (data.down) moveStep(p, -p.speed, currentRoomId);
+    });
+
+    function moveStep(p, step, rid) {
+        if (step === 0) return;
+        let dx = Math.cos(p.angle) * step;
+        let dy = Math.sin(p.angle) * step;
+        if (!checkWallCollision(p.x + dx, p.y) && !rooms[rid].checkTankCollision(socket.id, p.x + dx, p.y)) p.x += dx;
+        if (!checkWallCollision(p.x, p.y + dy) && !rooms[rid].checkTankCollision(socket.id, p.x, p.y + dy)) p.y += dy;
+        p.lastActive = Date.now();
     }
+
+    socket.on('shoot', () => {
+        if (!currentRoomId || !rooms[currentRoomId]) return;
+        let p = rooms[currentRoomId].players[socket.id];
+        if (!p) return;
+        let now = Date.now();
+        if (now - p.lastShotTime < p.reloadTime) return;
+        p.lastShotTime = now;
+        rooms[currentRoomId].bullets.push({
+            x: p.x + Math.cos(p.angle) * 35, y: p.y + Math.sin(p.angle) * 35,
+            speedX: Math.cos(p.angle) * 15, speedY: Math.sin(p.angle) * 15,
+            damage: p.damage, ownerId: socket.id
+        });
+    });
+
+    socket.on('ping_check', (cb) => { if (typeof cb === 'function') cb(); });
+});
+
+
+
+// --- GAME LOOP (24 FPS) ---
+setInterval(() => {
+    try {
+        let now = Date.now();
+        for (let roomId in rooms) {
+            let roomState = rooms[roomId].update();
+            io.to(roomId).emit('state', {
+                players: roomState.players,
+                bullets: roomState.bullets,
+                shield: roomState.shield,
+                serverTime: now
+            });
+        }
+    } catch (e) { console.error("Game Loop Error:", e); }
 }, 1000 / 24);
+
+// --- CLEANING PROCESS (Background Task) ---
+function startCleanupProcess() {
+    setInterval(() => {
+        const now = Date.now();
+        const AFK_TIMEOUT = 5 * 60 * 1000;
+
+        for (let roomId in rooms) {
+            let r = rooms[roomId];
+            // AFK Kick
+            for (let pid in r.players) {
+                if (now - r.players[pid].lastActive > AFK_TIMEOUT) {
+                    if (io.sockets.sockets.get(pid)) io.sockets.sockets.get(pid).disconnect(true);
+                    r.removePlayer(pid);
+                }
+            }
+            // Delete Empty Custom Rooms
+            if (Object.keys(r.players).length === 0 && roomId.startsWith('room_')) {
+                console.log(`[CLEANUP] Deleting empty room: ${r.name}`);
+                delete rooms[roomId];
+            }
+        }
+    }, 60000);
+    console.log("🧹 [Game] Cleaning Process started...");
+}
+startCleanupProcess();

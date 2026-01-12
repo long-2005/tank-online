@@ -32,13 +32,31 @@ app.use(express.json()); // Enable JSON body parsing
 app.use(express.static(path.join(__dirname, 'public')));
 
 // --- MIDDLEWARE LOGGING (Chương 8: Log Management) ---
+const logBuffer = [];
+function addLog(msg) {
+  const logEntry = `[${new Date().toISOString()}] ${msg}`;
+  logBuffer.push(logEntry);
+  if (logBuffer.length > 50) logBuffer.shift(); // Keep last 50 logs
+  console.log(logEntry);
+}
+
 app.use((req, res, next) => {
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+  // BO LO QUA CAC REQUEST TU MONITOR
+  if (req.url !== '/health' && req.url !== '/api/logs') {
+    addLog(`${req.method} ${req.url}`);
+  }
   next();
+});
+
+// API Get Logs
+app.get('/api/logs', (req, res) => {
+  res.header("Access-Control-Allow-Origin", "*");
+  res.json(logBuffer);
 });
 
 // --- HEALTH CHECK (Chương 8: Health Monitoring) ---
 app.get('/health', (req, res) => {
+  res.header("Access-Control-Allow-Origin", "*");
   res.json({
     status: 'UP',
     uptime: process.uptime(),

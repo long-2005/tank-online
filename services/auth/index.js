@@ -30,7 +30,9 @@ const UserModel = mongoose.model('User', UserSchema);
 
 // --- STATIC ASSETS (Frontend) ---
 // Auth service will serve the website files
-app.use(express.static(path.join(__dirname, '../../public')));
+// --- STATIC ASSETS (Frontend) ---
+// Auth service will serve the website files locally
+app.use(express.static(path.join(__dirname, 'public')));
 // Note: We moved public folder inside auth service for simpler deployment
 
 // --- DATABASE HELPERS ---
@@ -40,13 +42,31 @@ async function findUser(username) {
 }
 
 // --- MIDDLEWARE LOGGING (Chương 8: Log Management) ---
+const logBuffer = [];
+function addLog(msg) {
+    const logEntry = `[${new Date().toISOString()}] ${msg}`;
+    logBuffer.push(logEntry);
+    if (logBuffer.length > 50) logBuffer.shift();
+    console.log(logEntry);
+}
+
 app.use((req, res, next) => {
-    console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+    // BO LO QUA CAC REQUEST TU MONITOR (Cho no do spam)
+    if (req.url !== '/health' && req.url !== '/api/logs') {
+        addLog(`${req.method} ${req.url}`);
+    }
     next();
+});
+
+// API Get Logs
+app.get('/api/logs', (req, res) => {
+    res.header("Access-Control-Allow-Origin", "*");
+    res.json(logBuffer);
 });
 
 // --- HEALTH CHECK (Chương 8: Health Monitoring) ---
 app.get('/health', (req, res) => {
+    res.header("Access-Control-Allow-Origin", "*");
     res.json({
         status: 'UP',
         service: 'Auth Service',
@@ -57,7 +77,6 @@ app.get('/health', (req, res) => {
 });
 
 // --- TASK SCHEDULING (CRON JOB) ---
-// Chương ?: Tự động hóa
 function startCronJobs() {
     setInterval(() => {
         const now = new Date();
@@ -126,12 +145,17 @@ app.post('/api/login', async (req, res) => {
             'tank5': { name: "Maus Tank", price: 2500, speed: 3, hp: 300, damage: 35, recoil: 10, reloadTime: 700 }
         };
 
+        // DYNAMIC URL DETECTION (Hỗ trợ cả Localhost, DuckDNS, Cloudflare)
+        // Nếu chạy qua NGINX/Cloudflare, header Host sẽ là domain.
+        const protocol = req.headers['x-forwarded-proto'] || 'http';
+        const host = req.get('host'); // e.g. "localhost" or "tank-game.duckdns.org"
+        const gameUrl = `${protocol}://${host}`;
+
         res.json({
             user: userData,
             config: TANK_CONFIG,
-            // We tell the client where the Game Server is.
-            // For now, assume it's on a different port locally or provided via Env
-            gameServerUrl: process.env.GAME_SERVER_URL || process.env.game_link || "http://localhost:6000"
+            // Client sẽ connect socket vào chính domain này (qua NGINX location /socket.io/)
+            gameServerUrl: gameUrl
         });
     } catch (e) {
         res.status(500).json({ error: 'Server error' });
@@ -210,8 +234,8 @@ process.on('SIGINT', async () => {
 
 // Root: Serve index.html
 app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, '../../index.html'));
-    // Note: We need to ensure index.html can be found relative to here
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+    // Note: Served from local services/auth/public/index.html
 });
 
 app.listen(PORT, () => {
