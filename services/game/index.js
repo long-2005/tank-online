@@ -25,11 +25,19 @@ const httpServer = http.createServer((req, res) => {
 
     // Health Check
     if (req.url === '/health') {
+        let activePlayers = 0;
+        if (typeof rooms !== 'undefined') {
+            for (let r in rooms) {
+                if (rooms[r].players) activePlayers += Object.keys(rooms[r].players).length;
+            }
+        }
+
         res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
         res.end(JSON.stringify({
             status: 'UP',
             service: 'Game Service',
             uptime: process.uptime(),
+            activePlayers: activePlayers,
             timestamp: Date.now(),
             dbConnection: useDB ? 'Connected' : 'Disconnected (RAM Mode)'
         }));
@@ -56,7 +64,8 @@ const io = new Server(httpServer, {
 });
 
 httpServer.listen(PORT, () => {
-    console.log(`🚀 [Game Service] HTTP & Socket.io running on port ${PORT}`);
+    addLog(`Game Service started on port ${PORT}`);
+    console.log(`[Game Service] HTTP & Socket.io running on port ${PORT}`);
 });
 
 // --- BACKUP AUTOMATION (Chương 7: Sao lưu) ---
@@ -104,7 +113,10 @@ const UserSchema = new mongoose.Schema({
     password: { type: String },
     money: { type: Number, default: 0 },
     skins: { type: [String] },
-    currentSkin: { type: String }
+    currentSkin: { type: String },
+    isOnline: { type: Boolean, default: false },
+    lastHeartbeat: { type: Date, default: Date.now },
+    currentSessionId: { type: String, default: '' }
 });
 const UserModel = mongoose.model('User', UserSchema);
 
@@ -120,7 +132,9 @@ async function addMoney(username, amount) {
 // --- GAME LOGIC (Copied from server.js) ---
 
 // CONFIG
-const TILE_SIZE = 20; const COLS = 40; const ROWS = 30;
+const TILE_SIZE = 20;
+const COLS = 100;  // Battle Royale: Increased from 40
+const ROWS = 75;   // Battle Royale: Increased from 30
 const TANK_CONFIG = {
     'tank': { name: "M4 Sherman", price: 0, speed: 3, hp: 100, damage: 10, recoil: 5, reloadTime: 500 },
     'tank1': { name: "T-34 Legend", price: 100, speed: 3.5, hp: 110, damage: 12, recoil: 5, reloadTime: 450 },
@@ -130,21 +144,24 @@ const TANK_CONFIG = {
     'tank5': { name: "Maus Tank", price: 2500, speed: 3, hp: 300, damage: 35, recoil: 10, reloadTime: 700 }
 };
 
-// MAP GENERATION
+// MAP GENERATION (Battle Royale Larger Map)
 const MAP = [];
 for (let r = 0; r < ROWS; r++) {
     let row = [];
     for (let c = 0; c < COLS; c++) {
+        // Border walls
         if (r === 0 || r === ROWS - 1 || c === 0 || c === COLS - 1) row.push(1);
-        else if (r % 6 === 0 && c % 6 === 0) row.push(1);
-        else if (r % 6 === 0 && (c - 1) % 6 === 0) row.push(1);
-        else if ((r - 1) % 6 === 0 && c % 6 === 0) row.push(1);
-        else if ((r - 1) % 6 === 0 && (c - 1) % 6 === 0) row.push(1);
+        // Internal obstacles (less dense for BR)
+        else if (r % 8 === 0 && c % 8 === 0) row.push(1);
+        else if (r % 8 === 0 && (c - 1) % 8 === 0) row.push(1);
+        else if ((r - 1) % 8 === 0 && c % 8 === 0) row.push(1);
+        else if ((r - 1) % 8 === 0 && (c - 1) % 8 === 0) row.push(1);
         else row.push(0);
     }
     MAP.push(row);
 }
-// Clean Zone
+
+// Clear Spawn Zones (8 corners + center for BR)
 const clearZone = (r1, c1, r2, c2) => {
     for (let r = r1; r <= r2; r++) {
         for (let c = c1; c <= c2; c++) {
@@ -152,7 +169,17 @@ const clearZone = (r1, c1, r2, c2) => {
         }
     }
 };
-clearZone(1, 1, 5, 5); clearZone(1, 34, 5, 38); clearZone(24, 1, 28, 5); clearZone(24, 34, 28, 38); clearZone(12, 17, 17, 22);
+// 8 Corner spawns + Center
+clearZone(1, 1, 8, 8);           // Top-left
+clearZone(1, 91, 8, 98);         // Top-right
+clearZone(66, 1, 73, 8);         // Bottom-left
+clearZone(66, 91, 73, 98);       // Bottom-right
+clearZone(1, 45, 8, 54);         // Top-center
+clearZone(66, 45, 73, 54);       // Bottom-center
+clearZone(33, 1, 41, 8);         // Mid-left
+clearZone(33, 91, 41, 98);       // Mid-right
+clearZone(33, 45, 41, 54);       // Center
+
 
 // COLLISION UTILS
 function checkWallCollision(x, y) {
@@ -178,16 +205,21 @@ class GameRoom {
         this.ownerId = ownerId;
         this.players = {};
         this.bullets = [];
-        this.shieldItem = { x: -100, y: -100, active: false, nextSpawnTime: Date.now() };
-        this.maxPlayers = 4;
+
+        // Battle Royale: Supply Crates instead of single shield
+        this.supplyCrates = [];
+        this.nextCrateSpawn = Date.now() + 30000; // 30s
+
+        this.maxPlayers = 20; // Battle Royale: 4 -> 20 players
         this.map = MAP;
     }
 
     addPlayer(socket, userData) {
         if (Object.keys(this.players).length >= this.maxPlayers) return false;
 
+        // Battle Royale: Larger spawn area
         let spawnX, spawnY, attempts = 0;
-        do { spawnX = Math.random() * 700 + 50; spawnY = Math.random() * 500 + 50; attempts++; }
+        do { spawnX = Math.random() * 1900 + 50; spawnY = Math.random() * 1400 + 50; attempts++; }
         while ((checkWallCollision(spawnX, spawnY) || this.checkTankCollision(socket.id, spawnX, spawnY)) && attempts < 200);
 
         let skin = (userData.skin) ? userData.skin : 'tank';
@@ -199,7 +231,19 @@ class GameRoom {
             hp: stats.hp, maxHp: stats.hp, speed: stats.speed, damage: stats.damage,
             recoil: stats.recoil, reloadTime: stats.reloadTime, lastShotTime: 0,
             lastActive: Date.now(),
-            invincibleUntil: 0
+            invincibleUntil: 0,
+
+            // Battle Royale: Armor System
+            armor: 0,
+            maxArmor: 3,
+
+            // Battle Royale: Ammo System
+            ammo: {
+                normal: 30,
+                explosive: 5,
+                armorPiercing: 10
+            },
+            currentAmmoType: 'normal'
         };
         return true;
     }
@@ -219,74 +263,203 @@ class GameRoom {
         return false;
     }
 
+
     update() {
         let now = Date.now();
-        // Shield
-        if (!this.shieldItem.active && now >= this.shieldItem.nextSpawnTime) this.spawnShield();
-        if (this.shieldItem.active) {
-            for (let id in this.players) {
-                let p = this.players[id];
-                if (Math.sqrt((p.x - this.shieldItem.x) ** 2 + (p.y - this.shieldItem.y) ** 2) < 40) {
-                    this.shieldItem.active = false;
-                    this.shieldItem.nextSpawnTime = now + 60000;
-                    p.invincibleUntil = now + 3000;
-                    break;
-                }
-            }
-        }
+
+        // Battle Royale: Supply Crate Spawning (TODO: implement spawn logic)
+        // Placeholder for now
+
         // Bullets
         for (let i = 0; i < this.bullets.length; i++) {
             let b = this.bullets[i];
             b.x += b.speedX; b.y += b.speedY;
             let gridX = Math.floor(b.x / TILE_SIZE);
             let gridY = Math.floor(b.y / TILE_SIZE);
+
+            // Wall collision
             if (gridY < 0 || gridY >= ROWS || gridX < 0 || gridX >= COLS || MAP[gridY][gridX] === 1) {
+                // Explosive ammo: explode on wall hit
+                if (b.type === 'explosive') {
+                    this.handleExplosion(b.x, b.y, b.damage, b.ownerId, now);
+                }
                 this.bullets.splice(i, 1); i--; continue;
             }
+
             let hit = false;
+
+            // Direct hit check
             for (let id in this.players) {
                 if (id === b.ownerId) continue;
                 let p = this.players[id];
                 if (p.invincibleUntil && now < p.invincibleUntil) continue;
+
                 if (Math.sqrt((b.x - p.x) ** 2 + (b.y - p.y) ** 2) < 25) {
-                    p.hp -= b.damage; hit = true;
-                    if (p.hp <= 0) { // Respawn Logic
-                        let attempts = 0;
-                        do { p.x = Math.random() * 700 + 50; p.y = Math.random() * 500 + 50; attempts++; }
-                        while ((checkWallCollision(p.x, p.y) || this.checkTankCollision(id, p.x, p.y)) && attempts < 200);
-                        p.hp = TANK_CONFIG[p.skin].hp;
-                        p.invincibleUntil = 0;
-                        if (io.sockets.sockets.get(b.ownerId)) io.to(b.ownerId).emit('kill_reward', 100);
+                    // Battle Royale: Apply damage with armor system
+                    this.applyDamage(p, b.damage, b.type, b.ownerId, now);
+
+                    // Explosive: AOE damage
+                    if (b.type === 'explosive') {
+                        this.handleExplosion(b.x, b.y, b.damage, b.ownerId, now);
+                    }
+
+                    hit = true;
+                    break;
+                }
+            }
+
+            // Remove bullet if hit or out of bounds
+            if (b.x < 0 || b.x > COLS * TILE_SIZE || b.y < 0 || b.y > ROWS * TILE_SIZE || hit) {
+                this.bullets.splice(i, 1); i--;
+            }
+        }
+
+        return {
+            players: this.players,
+            bullets: this.bullets,
+            supplyCrates: this.supplyCrates
+        };
+    }
+
+    // Battle Royale: Damage calculation with armor
+    applyDamage(player, baseDamage, ammoType, attackerId, now) {
+        let damage = baseDamage;
+
+        // Armor-piercing bonus if target has armor
+        if (ammoType === 'armorPiercing' && player.armor > 0) {
+            damage *= 1.5;
+        }
+
+        // Armor absorbs hits
+        if (player.armor > 0) {
+            player.armor--;
+            // Armor blocks damage completely (1 hit = 1 armor segment)
+            return;
+        }
+
+        // No armor: damage HP
+        player.hp -= damage;
+
+        // Battle Royale: NO RESPAWN, player dies permanently
+        if (player.hp <= 0) {
+            player.hp = 0;
+            player.dead = true;
+
+            // Get killer info
+            let killer = this.players[attackerId];
+            let killerName = killer ? killer.username : 'Unknown';
+
+            // Find victim's socket and notify
+            for (let socketId in this.players) {
+                if (this.players[socketId] === player) {
+                    if (io.sockets.sockets.get(socketId)) {
+                        io.to(socketId).emit('you_died', {
+                            killerName: killerName,
+                            rank: this.getAliveCount() // How many players left
+                        });
                     }
                     break;
                 }
             }
-            if (b.x < 0 || b.x > 800 || b.y < 0 || b.y > 600 || hit) { this.bullets.splice(i, 1); i--; }
+
+            // Reward killer
+            if (io.sockets.sockets.get(attackerId)) {
+                io.to(attackerId).emit('kill_reward', 100);
+            }
         }
-        return { players: this.players, bullets: this.bullets, shield: this.shieldItem };
     }
 
+    // Count alive players
+    getAliveCount() {
+        let count = 0;
+        for (let id in this.players) {
+            if (!this.players[id].dead) count++;
+        }
+        return count;
+    }
+
+    // Battle Royale: Explosive AOE damage
+    handleExplosion(x, y, baseDamage, ownerId, now) {
+        const RADIUS = 80;
+        for (let id in this.players) {
+            if (id === ownerId) continue;
+            let p = this.players[id];
+            if (p.invincibleUntil && now < p.invincibleUntil) continue;
+
+            let dist = Math.sqrt((p.x - x) ** 2 + (p.y - y) ** 2);
+            if (dist < RADIUS) {
+                // Damage decreases with distance
+                let damage = baseDamage * (1 - dist / RADIUS);
+                this.applyDamage(p, damage, 'explosive', ownerId, now);
+            }
+        }
+    }
+
+    // Old shield spawn (removed for BR)
     spawnShield() {
-        let attempts = 0, spawnX, spawnY;
-        do { spawnX = Math.random() * 700 + 50; spawnY = Math.random() * 500 + 50; attempts++; }
-        while (checkWallCollision(spawnX, spawnY) && attempts < 100);
-        if (attempts < 100) { this.shieldItem.x = spawnX; this.shieldItem.y = spawnY; this.shieldItem.active = true; }
+        // Legacy code, not used in Battle Royale
     }
 }
 
 // Global Rooms
 const rooms = {};
-rooms['room1'] = new GameRoom('room1', 'room 1', null);
-rooms['room2'] = new GameRoom('room2', 'room 2', null);
+// Bỏ phòng mặc định (room1, room2) theo yêu cầu Matchmaking
+// rooms['room1'] = new GameRoom('room1', 'room 1', null);
+// rooms['room2'] = new GameRoom('room2', 'room 2', null);
+
+// --- MATCHMAKING SYSTEM ---
+let matchmakingQueue = [];
+
+function checkMatchmakingQueue() {
+    if (matchmakingQueue.length >= 2) {
+        // Lấy tối đa 4 người
+        let members = matchmakingQueue.splice(0, 4);
+
+        let roomId = 'match_' + Date.now();
+        let room = new GameRoom(roomId, 'Ranked Match', 'system');
+        rooms[roomId] = room;
+
+        console.log(`[MATCHMAKING] Created room ${roomId} with ${members.length} players.`);
+
+        members.forEach(m => {
+            // Add player to room logic
+            let socket = io.sockets.sockets.get(m.socketId);
+            if (socket) {
+                // Tự động join room
+                if (room.addPlayer(socket, m.userData)) {
+                    socket.join(roomId);
+                    socket.emit('match_found', { roomId: roomId, map: room.map });
+                }
+            }
+        });
+    }
+}
+setInterval(checkMatchmakingQueue, 3000); // Check every 3 seconds
 
 io.on('connection', (socket) => {
     let currentRoomId = null;
 
     socket.on('get_rooms', () => {
-        let list = Object.values(rooms).map(r => ({
-            id: r.id, name: r.name, count: Object.keys(r.players).length, max: r.maxPlayers
-        }));
+        // Chỉ trả về custom rooms hoặc rank mode status (optional)
+        let list = Object.values(rooms)
+            .filter(r => r.id.startsWith('room_')) // Chỉ hiện phòng Custom
+            .map(r => ({
+                id: r.id, name: r.name, count: Object.keys(r.players).length, max: r.maxPlayers
+            }));
         socket.emit('room_list', list);
+    });
+
+    socket.on('join_matchmaking', (userData) => {
+        // Check if already in queue
+        if (matchmakingQueue.find(m => m.socketId === socket.id)) return;
+
+        matchmakingQueue.push({ socketId: socket.id, userData });
+        socket.emit('matchmaking_update', { count: matchmakingQueue.length });
+        // Notify others? Maybe not necessary for simple logic, but good for UX
+    });
+
+    socket.on('leave_matchmaking', () => {
+        matchmakingQueue = matchmakingQueue.filter(m => m.socketId !== socket.id);
     });
 
     socket.on('create_room', (roomName) => {
@@ -295,15 +468,30 @@ io.on('connection', (socket) => {
         socket.emit('create_room_success', id);
     });
 
-    socket.on('join_room', (data) => {
+    socket.on('join_room', async (data) => {
         const { roomId, username, skin } = data;
+
+        // SINGLE SESSION CHECK (KICK STRATEGY)
+        if (useDB) {
+            try {
+                // Kick Old Session Logic:
+                // Just overwrite the session ID in DB. The old session will detect this via Heartbeat and disconnect itself.
+                await UserModel.updateOne(
+                    { username },
+                    { isOnline: true, lastHeartbeat: Date.now(), currentSessionId: socket.id }
+                );
+            } catch (e) {
+                console.error("Session update error:", e);
+            }
+        }
+
         let room = rooms[roomId];
         if (room && room.addPlayer(socket, { username, skin })) {
             currentRoomId = roomId;
             socket.join(roomId);
             socket.emit('join_success', { roomId: roomId, map: room.map });
         } else {
-            socket.emit('join_error', 'Phong day hoac khong ton tai!');
+            socket.emit('join_error', 'Phòng đầy hoặc không tồn tại!');
         }
     });
 
@@ -315,13 +503,26 @@ io.on('connection', (socket) => {
         }
     });
 
-    socket.on('disconnect', () => {
+    socket.on('disconnect', async () => {
         if (currentRoomId && rooms[currentRoomId]) {
+            const p = rooms[currentRoomId].players[socket.id];
+            if (p && useDB) {
+                try {
+                    // Only mark offline if I AM the current session
+                    await UserModel.updateOne(
+                        { username: p.username, currentSessionId: socket.id },
+                        { isOnline: false }
+                    );
+                } catch (e) { console.error("Disconnect update error", e); }
+            }
+
             rooms[currentRoomId].removePlayer(socket.id);
-            if (Object.keys(rooms[currentRoomId].players).length === 0 && rooms[currentRoomId].id.startsWith('room_')) {
+            if (Object.keys(rooms[currentRoomId].players).length === 0 && (rooms[currentRoomId].id.startsWith('room_') || rooms[currentRoomId].id.startsWith('match_'))) {
                 delete rooms[currentRoomId];
             }
         }
+        // Remove from Queue if disconnecting
+        matchmakingQueue = matchmakingQueue.filter(m => m.socketId !== socket.id);
     });
 
     socket.on('movement', (data) => {
@@ -350,15 +551,59 @@ io.on('connection', (socket) => {
         if (!p) return;
         let now = Date.now();
         if (now - p.lastShotTime < p.reloadTime) return;
+
+        // Battle Royale: Check ammo
+        let ammoType = p.currentAmmoType;
+        if (p.ammo[ammoType] <= 0) return; // No ammo!
+
         p.lastShotTime = now;
+        p.ammo[ammoType]--; // Consume ammo
+
         rooms[currentRoomId].bullets.push({
             x: p.x + Math.cos(p.angle) * 35, y: p.y + Math.sin(p.angle) * 35,
             speedX: Math.cos(p.angle) * 15, speedY: Math.sin(p.angle) * 15,
-            damage: p.damage, ownerId: socket.id
+            damage: p.damage,
+            ownerId: socket.id,
+            type: ammoType, // Battle Royale: Bullet type
+            explosionRadius: ammoType === 'explosive' ? 80 : 0
         });
     });
 
-    socket.on('ping_check', (cb) => { if (typeof cb === 'function') cb(); });
+    // Battle Royale: Switch Ammo Type (Q key)
+    socket.on('switch_ammo', () => {
+        if (!currentRoomId || !rooms[currentRoomId]) return;
+        let p = rooms[currentRoomId].players[socket.id];
+        if (!p) return;
+
+        // Cycle: normal -> explosive -> armorPiercing -> normal
+        if (p.currentAmmoType === 'normal') p.currentAmmoType = 'explosive';
+        else if (p.currentAmmoType === 'explosive') p.currentAmmoType = 'armorPiercing';
+        else p.currentAmmoType = 'normal';
+
+        socket.emit('ammo_switched', p.currentAmmoType);
+    });
+
+    socket.on('ping_check', async (cb) => {
+        if (typeof cb === 'function') cb();
+
+        // Update Heartbeat
+        if (useDB && currentRoomId && rooms[currentRoomId] && rooms[currentRoomId].players[socket.id]) {
+            const p = rooms[currentRoomId].players[socket.id];
+            try {
+                // Conditional Update: Only update if currentSessionId matches my socket.id
+                const res = await UserModel.updateOne(
+                    { username: p.username, currentSessionId: socket.id },
+                    { lastHeartbeat: Date.now() }
+                );
+
+                // If matchedCount is 0, it means session ID has changed (someone else logged in)
+                if (res.matchedCount === 0) {
+                    socket.emit('force_disconnect', 'Tài khoản của bạn đã được đăng nhập ở nơi khác!');
+                    socket.disconnect();
+                }
+            } catch (e) { }
+        }
+    });
 });
 
 

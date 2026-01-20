@@ -15,8 +15,8 @@ const MONGO_URI = process.env.MONGO_URI || process.env.Mongo_url || "mongodb+srv
 let useDB = false;
 
 mongoose.connect(MONGO_URI)
-    .then(() => { console.log("✅ [Auth] Connected to MongoDB"); useDB = true; })
-    .catch(err => console.log("❌ [Auth] DB Error:", err));
+    .then(() => { console.log("[Auth] Connected to MongoDB"); useDB = true; })
+    .catch(err => console.log("[Auth] DB Error:", err));
 
 // --- USER MODEL ---
 const UserSchema = new mongoose.Schema({
@@ -24,7 +24,10 @@ const UserSchema = new mongoose.Schema({
     password: { type: String, required: true },
     money: { type: Number, default: 0 },
     skins: { type: [String], default: ['tank'] },
-    currentSkin: { type: String, default: 'tank' }
+    currentSkin: { type: String, default: 'tank' },
+    isOnline: { type: Boolean, default: false },
+    lastHeartbeat: { type: Date, default: Date.now },
+    currentSessionId: { type: String, default: '' }
 });
 const UserModel = mongoose.model('User', UserSchema);
 
@@ -99,7 +102,7 @@ function startCronJobs() {
         }
 
     }, 1000); // Check every second (Simple implementation)
-    console.log("🕒 [Auth] Cron Jobs started...");
+    console.log("[Auth] Cron Jobs started...");
 }
 startCronJobs();
 
@@ -239,5 +242,6 @@ app.get('/', (req, res) => {
 });
 
 app.listen(PORT, () => {
-    console.log(`🚀 [Auth Service] running on port ${PORT}`);
+    addLog(`Auth Service started on port ${PORT}`);
+    console.log(`[Auth Service] running on port ${PORT}`);
 });

@@ -1,0 +1,14 @@
+node_modules
+npm-debug.log
+.git
+.gitignore
+*.md
+.env
+docker-compose.yml
+Dockerfile
+.dockerignore
+nginx-1.29.4
+ngrok.exe
+*.bat
+surviv.io-main
+backup_gamestate.json

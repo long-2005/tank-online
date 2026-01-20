@@ -131,6 +131,7 @@
                 </div>
                 <div class="metrics">
                     <div>UPTIME: <span id="uptime-${service.id}">-</span></div>
+                    <div>PLAYERS: <span id="players-${service.id}" style="color: #58a6ff; font-weight: bold;">-</span></div>
                     <div>DB: <span id="db-${service.id}">-</span></div>
                 </div>
                 <div class="log-panel" id="logs-${service.id}">
@@ -159,6 +160,7 @@
                     document.getElementById(`status-${service.id}`).innerText = "ONLINE";
                     document.getElementById(`status-${service.id}`).className = "service-status status-up";
                     document.getElementById(`uptime-${service.id}`).innerText = formatUptime(data.uptime);
+                    document.getElementById(`players-${service.id}`).innerText = (data.activePlayers !== undefined) ? data.activePlayers : '-';
                     document.getElementById(`db-${service.id}`).innerText = data.dbConnection || 'N/A';
                 } else {
                     markDown(service.id);
@@ -184,6 +186,7 @@
         document.getElementById(`status-${id}`).innerText = "OFFLINE";
         document.getElementById(`status-${id}`).className = "service-status status-down";
         document.getElementById(`uptime-${id}`).innerText = "-";
+        document.getElementById(`players-${id}`).innerText = "-";
         document.getElementById(`db-${id}`).innerText = "-";
     }
 
@@ -197,7 +200,16 @@
 
     function renderLogs(id, logs) {
         const container = document.getElementById(`logs-${id}`);
-        if (!logs || logs.length === 0) return;
+        const statusText = document.getElementById(`status-${id}`).innerText;
+
+        if (!logs || logs.length === 0) {
+            if (statusText === 'ONLINE') {
+                container.innerHTML = '<div style="color: #777; text-align: center; padding-top: 100px;">Service đã chạy nhưng chưa có logs nào.</div>';
+            } else {
+                container.innerHTML = '<div style="color: #555; text-align: center; padding-top: 100px;">Waiting for logs...</div>';
+            }
+            return;
+        }
         
         const html = logs.map(line => {
              const parts = line.split('] ');

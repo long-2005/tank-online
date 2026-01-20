@@ -1,37 +1,96 @@
 version: '3.8'
 
 services:
+  # Auth Service - Dịch vụ xác thực và phục vụ web tĩnh
   auth-service:
-    build: 
+    build:
       context: ./services/auth
       dockerfile: Dockerfile
-    command: npm start
+    container_name: tank-auth
     ports:
-      - "5000:5000"
+      - "5000:5000" # Mở port cho Monitor Dashboard có thể truy cập
     environment:
       - PORT=5000
       - MONGO_URI=${MONGO_URI}
-      - GAME_SERVER_URL=http://localhost:6000
     volumes:
-      - ./services/auth:/app/services/auth
-      - ./public:/app/public
-      - ./index.html:/app/index.html
+      - ./services/auth:/app
+      - /app/node_modules
+    restart: unless-stopped
+    networks:
+      - tank-network
 
-  game-service:
+  # Game Service Node 1
+  game-service-1:
     build:
       context: ./services/game
       dockerfile: Dockerfile
-    command: npm start
+    container_name: tank-game-1
     ports:
-      - "6000:6000"
+      - "6001:6000" # Mở port cho Monitor Dashboard
     environment:
       - PORT=6000
       - MONGO_URI=${MONGO_URI}
     volumes:
-      - ./services/game:/app/services/game
+      - ./services/game:/app
+      - /app/node_modules
+    restart: unless-stopped
+    networks:
+      - tank-network
 
-# Note: We need Dockerfiles in each service or use a generic node image.
-# Using generic node image for simplicity if user has docker.
-# Actually, let's just make it run with local node for now since user is on Windows/Local.
-# Docker compose is good for structure but maybe overkill if user just wants to run locally.
-# Let's keep this file as artifact but focus on running locally with npm scripts.
+  # Game Service Node 2
+  game-service-2:
+    build:
+      context: ./services/game
+      dockerfile: Dockerfile
+    container_name: tank-game-2
+    ports:
+      - "6002:6000" # Mở port cho Monitor Dashboard
+    environment:
+      - PORT=6000
+      - MONGO_URI=${MONGO_URI}
+    volumes:
+      - ./services/game:/app
+      - /app/node_modules
+    restart: unless-stopped
+    networks:
+      - tank-network
+
+  # Game Service Node 3
+  game-service-3:
+    build:
+      context: ./services/game
+      dockerfile: Dockerfile
+    container_name: tank-game-3
+    ports:
+      - "6003:6000" # Mở port cho Monitor Dashboard
+    environment:
+      - PORT=6000
+      - MONGO_URI=${MONGO_URI}
+    volumes:
+      - ./services/game:/app
+      - /app/node_modules
+    restart: unless-stopped
+    networks:
+      - tank-network
+
+  # Nginx Load Balancer
+  nginx:
+    image: nginx:alpine
+    container_name: tank-nginx
+    ports:
+      - "80:80"
+    volumes:
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./services/monitor:/usr/share/nginx/html/monitor:ro
+    depends_on:
+      - auth-service
+      - game-service-1
+      - game-service-2
+      - game-service-3
+    restart: unless-stopped
+    networks:
+      - tank-network
+
+networks:
+  tank-network:
+    driver: bridge
