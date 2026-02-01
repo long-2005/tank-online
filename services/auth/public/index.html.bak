@@ -119,7 +119,7 @@
             </div>
         </div>
         
-        <button id="btn-quit" onclick="showQuitDialog()">✕</button>
+        <button id="btn-quit" onclick="leaveGame()">✕</button>
         
         <!-- Minimap -->
         <div id="minimap" style="pointer-events: auto;">
@@ -138,18 +138,6 @@
         </div>
     </div>
 
-    <!-- Quit Confirmation Dialog -->
-    <div id="quit-confirm-screen" style="position: absolute; width: 100%; height: 100%; background: rgba(0,0,0,0.85); display: none; justify-content: center; align-items: center; z-index: 150;">
-        <div class="death-panel" style="border-color: #e67e22;">
-            <h2 style="color: #e67e22; margin: 0 0 20px 0;">THOÁT TRẬN ĐẤU?</h2>
-            <p style="font-size: 16px; color: #bdc3c7; margin-bottom: 30px;">Bạn có chắc muốn thoát?<br/>Tiến độ trận đấu sẽ bị mất.</p>
-            <div style="display: flex; gap: 15px;">
-                <button onclick="confirmQuit()" style="flex: 1; background: #e74c3c; font-size: 16px;">CÓ, THOÁT</button>
-                <button onclick="cancelQuit()" style="flex: 1; background: #27ae60; font-size: 16px;">KHÔNG</button>
-            </div>
-        </div>
-    </div>
-
     <div id="ui-layer">
         <div id="login-screen" class="panel">
             <h1 style="color:#e67e22">TANK BATTLEFIELD</h1>
@@ -162,7 +150,16 @@
             </div>
         </div>
 
-
+        <div id="menu-screen" class="panel" style="display:none;">
+            <h2>GARAGE</h2>
+            <p>Tài sản: <span id="user-money" style="color:#f1c40f; font-size: 1.4em;">0</span> $</p>
+            <div id="shop-container"></div>
+            <div id="shop-container"></div>
+            <div style="display:flex; justify-content:center; gap:10px; margin-top:10px;">
+                <button onclick="playGame()" style="background:#27ae60; flex:2;">VÀO TRẬN ĐẤU</button>
+                <button onclick="showLeaderboard()" style="background:#8e44ad; flex:1;">🏆 BXH</button>
+            </div>
+        </div>
         
         <div id="leaderboard-screen" class="panel" style="display:none;">
             <h2>🏆 BẢNG XẾP HẠNG</h2>
@@ -170,20 +167,17 @@
             <button onclick="closeLeaderboard()" style="margin-top:15px; background:#95a5a6;">QUAY LẠI</button>
         </div>
 
-        <div id="lobby-screen" class="panel" style="display:none; width: 450px; min-height: 300px;">
-            <h2>🎮 MENU CHÍNH</h2>
-            <p style="font-size: 14px; color: #95a5a6; margin-bottom: 25px;">Chào mừng <span id="lobby-username" style="color: #f1c40f; font-weight: bold;"></span>!</p>
-            <p style="font-size: 14px; color: #bdc3c7; margin-bottom: 25px;">Tài sản: <span id="lobby-money" style="color: #2ecc71; font-size: 20px; font-weight: bold;">0</span> $</p>
+        <div id="lobby-screen" class="panel" style="display:none; width: 400px; min-height: 250px;">
+            <h2>🎮 BATTLE ROYALE</h2>
+            <p style="font-size: 14px; color: #95a5a6;">Ghép đội tự động - Tối thiểu 2 người</p>
             
-            <!-- Main Menu Buttons -->
-            <div id="menu-buttons">
-                 <button onclick="startMatchmaking()" style="background: #27ae60; font-size: 18px; padding: 15px; width: 100%; margin-bottom: 12px;">🎯 TÌM TRẬN ĐẤU</button>
-                 <button onclick="openShopFromLobby()" style="background: #3498db; font-size: 16px; padding: 12px; width: 100%; margin-bottom: 12px;">🛒 SHOP - CHỌN TANK</button>
-                 <button onclick="openLeaderboardFromLobby()" style="background: #9b59b6; font-size: 16px; padding: 12px; width: 100%; margin-bottom: 12px;">🏆 BẢNG XẾP HẠNG</button>
-                 <button onclick="logout()" style="background: #95a5a6; font-size: 14px; padding: 10px; width: 100%;">⬅️ ĐĂNG XUẤT</button>
+            <!-- STATE 1: IDLE -->
+            <div id="match-start">
+                 <button id="btn-find-match" onclick="findMatch()" style="background: #27ae60; font-size: 18px; padding: 15px; width: 100%;">TÌM TRẬN ĐẤU</button>
+                 <button onclick="logoutToMenu()" style="margin-top: 15px; background: #95a5a6; width: 100%;">QUAY LẠI MENU</button>
             </div>
 
-            <!-- Matchmaking Queue (Hidden by default) -->
+            <!-- STATE 2: SEARCHING -->
             <div id="match-queue" style="display: none;">
                 <div class="loader"></div>
                 <div style="font-size: 18px; color: #f1c40f; margin: 15px 0;">ĐANG TÌM TRẬN...</div>
@@ -208,7 +202,6 @@
         // Game constants
         const TILE_SIZE = 20;
         let socket = null;
-        let pingInterval = null;
 
         // Camera system
         let camera = { x: 0, y: 0 };
@@ -244,7 +237,6 @@
 
         let myUser = null;
         let tankConfig = {};
-        let gameUrl = null; // Store game server URL
         let mapData = []; 
         
         // Init Map Immediately - Battle Royale 100x75 (NO OBSTACLES)
@@ -278,7 +270,35 @@
             }
         }
 
+        async function showLeaderboard() {
+            document.getElementById('menu-screen').style.display = 'none';
+            document.getElementById('leaderboard-screen').style.display = 'block';
+            
+            const list = document.getElementById('leaderboard-list');
+            list.innerHTML = 'Loading...';
 
+            try {
+                const res = await fetch('/api/leaderboard');
+                const data = await res.json();
+                
+                if (data && data.length > 0) {
+                    let html = '<ol style="padding-left: 20px;">';
+                    data.forEach(u => {
+                        html += `<li style="margin-bottom:5px; border-bottom:1px solid #555; padding:5px;">
+                            <span style="font-weight:bold; color:#f1c40f">${u.username}</span> 
+                            - Skin: ${u.skins.length} 
+                            - Money: <span style="color:#2ecc71">${u.money}$</span>
+                        </li>`;
+                    });
+                    html += '</ol>';
+                    list.innerHTML = html;
+                } else {
+                    list.innerHTML = 'Chưa có dữ liệu';
+                }
+            } catch(e) {
+                list.innerHTML = 'Lỗi tải BXH';
+            }
+        }
 
         async function login() {
             let u = document.getElementById('username').value;
@@ -307,7 +327,7 @@
 
         function closeLeaderboard() {
             document.getElementById('leaderboard-screen').style.display = 'none';
-            document.getElementById('lobby-screen').style.display = 'block';
+            document.getElementById('menu-screen').style.display = 'block';
         }
 
         async function login() {
@@ -320,16 +340,14 @@
                 myUser = data.user;
                 tankConfig = data.config;
                 // Config Game Socket
-                gameUrl = data.gameServerUrl; // e.g. "http://localhost:6000"
+                const gameUrl = data.gameServerUrl; // e.g. "http://localhost:6000"
                 connectGameSocket(gameUrl);
                 
-                // Update lobby screen with user info
-                document.getElementById('lobby-username').innerText = myUser.username;
-                document.getElementById('lobby-money').innerText = myUser.money;
-                
-                // Switch to lobby (main menu) directly
+                // Switch Screen
+                // Wait for Map data? We can render shop without map.
+                renderShop();
                 document.getElementById('login-screen').style.display = 'none';
-                document.getElementById('lobby-screen').style.display = 'block';
+                document.getElementById('menu-screen').style.display = 'block';
             }
         }
 
@@ -343,18 +361,13 @@
         }
         
         // --- BIẾN TOÀN CỤC CHO GAME LOOP ---
-        let isMatchmaking = false; // Flag to prevent UI race conditions
         let latestServerData = null; // Chứa dữ liệu mới nhất từ Server gửi về (24 lần/giây)
         // --- KẾT NỐI SOCKET ---
         function connectGameSocket(url) {
             let targetUrl = url || window.location.origin;
             console.log("Connecting to Game Server:", targetUrl);
-            
-            if(socket) {
-                socket.disconnect();
-                socket.off(); // Remove all listeners
-            }
             socket = io(targetUrl);
+
             // --- LOGOUT LOGIC ---
             window.logoutToMenu = function() {
                 if(socket) socket.disconnect();
@@ -364,29 +377,17 @@
             };
             
             socket.on('connect', () => {
-                console.log("Connected to Game Socket! ID:", socket.id);
-                
-                // Check if this is a redirect reconnection
-                if (window.pendingRedirect) {
-                    console.log("[REDIRECT] Reconnected. Claiming spot in room:", window.pendingRedirect.roomId);
-                    socket.emit('claim_spot', {
-                        username: myUser.username,
-                        roomId: window.pendingRedirect.roomId
-                    });
-                    // UI transitions will be handled by 'join_success'
-                    window.pendingRedirect = null;
-                } else {
-                    // Normal Connection -> Show Lobby
-                    document.getElementById('login-screen').style.display = 'none'; // Hide login screen
-                    document.getElementById('menu-screen').style.display = 'none'; // Hide menu screen
-                    document.getElementById('lobby-screen').style.display = 'block'; // Show lobby screen
-                    fetchRooms();
-                }
+                console.log("Connected to Game Socket!");
+                // Thay vì join luôn, ta hiện Lobby
+                document.getElementById('login-screen').style.display = 'none'; // Hide login screen
+                document.getElementById('menu-screen').style.display = 'none'; // Hide menu screen
+                document.getElementById('lobby-screen').style.display = 'block'; // Show lobby screen
+                fetchRooms();
                 
                 // Ping Loop
                 if (pingInterval) clearInterval(pingInterval);
                 pingInterval = setInterval(() => {
-                    if (!socket || !socket.connected) return;
+                    if (!socket) return;
                     const start = Date.now();
                     socket.emit('ping_check', () => { 
                         const latency = Date.now() - start;
@@ -420,43 +421,28 @@
             
             // Matchmaking events
             socket.on('matchmaking_status', (data) => {
-                if (!isMatchmaking) return; // Ignore events if we cancelled
-                
                 if (data.status === 'searching') {
-                    // Show queue UI
-                    document.getElementById('menu-buttons').style.display = 'none';
+                    // Start hidden, but if searching, ensure queue UI is visible
+                    document.getElementById('match-start').style.display = 'none';
                     document.getElementById('match-queue').style.display = 'block';
-                    
-                    if (data.queueSize !== undefined) {
-                         document.getElementById('queue-count').innerText = `Người chơi trong hàng: ${data.queueSize}`;
-                    }
-                    
-                    if (data.countdown !== undefined) {
-                         if (data.countdown > 0) {
-                             document.getElementById('match-start').style.display = 'block'; // Show if hidden
-                             document.getElementById('match-start').innerText = `🎮 BẮT ĐẦU TRẬN ĐẤU SAU: ${data.countdown}s`;
-                         } else {
-                             document.getElementById('match-start').innerText = `🎮 ĐANG TẠO PHÒNG...`;
-                         }
-                    } else {
-                        document.getElementById('match-start').style.display = 'none'; // Hide if no countdown
-                    }
-                } else if (data.status === 'match_found') {
-                    document.getElementById('match-start').innerText = "✅ BẮT ĐẦU!";
+                    document.getElementById('queue-count').innerText = `Người chơi trong hàng: ${data.queueSize}`;
+                    document.getElementById('debug-info').innerText = `Đang chờ thêm người chơi...`;
+                } else if (data.status === 'countdown') {
+                    // Countdown started!
+                    document.getElementById('match-start').style.display = 'none';
+                    document.getElementById('match-queue').style.display = 'block';
+                    document.getElementById('queue-count').innerText = `Người chơi: ${data.queueSize}/20`;
+                    document.getElementById('debug-info').innerText = `🎮 BẮT ĐẦU TRẬN ĐẤU SAU: ${data.countdown}s`;
+                    document.getElementById('debug-info').style.color = '#f1c40f';
+                    document.getElementById('debug-info').style.fontSize = '16px';
+                    document.getElementById('debug-info').style.fontWeight = 'bold';
+                } else if (data.status === 'cancelled') {
+                    document.getElementById('match-queue').style.display = 'none';
+                    document.getElementById('match-start').style.display = 'block';
                 }
             });
             
             socket.on('match_found', (data) => {
-                if (data.redirectUrl) {
-                    console.log("[MATCH] Redirecting to:", data.redirectUrl);
-                    // Set flag for reconnection
-                    window.pendingRedirect = { roomId: data.roomId };
-                    
-                    // Reconnect to the new URL
-                    connectGameSocket(data.redirectUrl); 
-                    return;
-                }
-
                 document.getElementById('match-queue').style.display = 'none'; // Hide queue UI
                 // document.getElementById('match-start').style.display = 'block'; // Reset for next time - actually lobby hidden below
                 document.getElementById('lobby-screen').style.display = 'none';
@@ -564,33 +550,34 @@
         // ======================================
         // MATCHMAKING FUNCTIONS - Redis Queue
         // ======================================
-
+        
+        function findMatch() {
+            if(!socket || !myUser) return;
+            
+            // Toggle UI
+            document.getElementById('match-start').style.display = 'none';
+            document.getElementById('match-queue').style.display = 'block';
+            document.getElementById('queue-count').innerText = `Đang kết nối...`;
+            
+            // Emit Redis matchmaking event
+            socket.emit('join_matchmaking', {
+                username: myUser.username,
+                skin: myUser.currentSkin || tankConfig.currentSkin || 'tank'
+            });
+            
+            console.log('[MATCHMAKING] Joining queue...');
+        }
         
         function cancelMatchmaking() {
             if(!socket) return;
             
-            isMatchmaking = false; // IMMEDIATELY stop accepting updates
-            
             // Emit leave queue event
             socket.emit('leave_matchmaking');
             
-            // Hide queue, show menu buttons
-            const queueEl = document.getElementById('match-queue');
-            const menuEl = document.getElementById('menu-buttons');
+            // Toggle UI back
+            document.getElementById('match-queue').style.display = 'none';
+            document.getElementById('match-start').style.display = 'block';
             
-            // Force hide queue UI immediately
-            if (queueEl) queueEl.style.display = 'none';
-            if (menuEl) {
-                menuEl.style.display = 'block';
-                console.log('[UI] Menu buttons shown:', menuEl.style.display);
-            } else {
-                console.error('[UI] menu-buttons element not found!');
-            }
-            
-            // Reset countdown text
-            const matchStart = document.getElementById('match-start');
-            if(matchStart) matchStart.style.display = 'none';
-
             console.log('[MATCHMAKING] Left queue');
         }
 
@@ -608,6 +595,7 @@
             });
         }
         let animationId = null;      // ID của vòng lặp vẽ (để dừng khi thoát)
+        let pingInterval = null;     // ID của vòng lặp Ping
         let currentPing = 0;         // Biến lưu Ping hiện tại
 
         // --- SHOP & GAME LOGIC ---
@@ -666,86 +654,18 @@
             updateMoneyUI();
         }
 
-        // === NEW MENU NAVIGATION FUNCTIONS ===
-        
-        function logout() {
-            if(socket) socket.disconnect();
-            socket = null;
-            myUser = null;
-            document.getElementById('lobby-screen').style.display = 'none';
-            document.getElementById('login-screen').style.display = 'block';
+        function playGame() {
+            document.getElementById('menu-screen').style.display = 'none';
+            document.getElementById('lobby-screen').style.display = 'block';
         }
-        
-        function openShopFromLobby() {
-            renderShop();
-            updateMoneyUI();
-            document.getElementById('lobby-screen').style.display = 'none';
-            document.getElementById('menu-screen').style.display = 'block';
-        }
-        
-        function openLeaderboardFromLobby() {
-            showLeaderboard();
-            document.getElementById('lobby-screen').style.display = 'none';
-        }
-        
-        function startMatchmaking() {
-            isMatchmaking = true; // Start accepting updates
-            
-            // Hide menu buttons, show queue
-            document.getElementById('menu-buttons').style.display = 'none';
-            document.getElementById('match-queue').style.display = 'block';
-            
-            // Start matchmaking
-            if(!socket || !myUser) return;
-            socket.emit('join_matchmaking', {
-                username: myUser.username,
-                skin: myUser.currentSkin || tankConfig.currentSkin || 'tank'
-            });
-            
-            console.log('[MATCHMAKING] Joining queue...');
-        }
-        
 
-        
-
-
-        // Show quit confirmation dialog
-        function showQuitDialog() {
-            document.getElementById('quit-confirm-screen').style.display = 'flex';
-        }
-        
-        // Cancel quit - return to game
-        function cancelQuit() {
-            document.getElementById('quit-confirm-screen').style.display = 'none';
-        }
-        
-        // Confirm quit - leave game
-        function confirmQuit() {
-            document.getElementById('quit-confirm-screen').style.display = 'none';
-            leaveGame();
-        }
-        
-        
         function leaveGame() {
             isPlaying = false;
-            cancelAnimationFrame(animationId); // Dừng vẽ
-            animationId = null;
-            
-            // Notify server
-            if(socket) {
-                socket.emit('leave_matchmaking'); // Leave matchmaking queue if in queue
-                socket.emit('leave_game');        // Leave active game room if playing
-            }
-            
-            // Reset UI - Hide all overlays
+            cancelAnimationFrame(animationId); // Dừng vẽ để tiết kiệm pin/CPU
+            // if(socket) socket.emit('leave_game'); // Optional
             document.getElementById('hud').style.display = 'none';
-            document.getElementById('match-queue').style.display = 'none'; // Hide queue UI
-            document.getElementById('quit-confirm-screen').style.display = 'none'; // Hide quit dialog
-            
-            // Show lobby with menu buttons
             document.getElementById('ui-layer').style.display = 'flex';
-            document.getElementById('lobby-screen').style.display = 'block';
-            document.getElementById('menu-buttons').style.display = 'block'; // Ensure buttons visible
+            document.getElementById('menu-screen').style.display = 'block';
         }
 
         let isPlaying = false;
@@ -847,11 +767,7 @@
         function gameLoop() {
             if (!isPlaying) return;
             
-            try {
-                updateAndDraw(); // Hàm vẽ chính
-            } catch (err) {
-                console.error("Game Loop Error:", err);
-            }
+            updateAndDraw(); // Hàm vẽ chính
             
             animationId = requestAnimationFrame(gameLoop); // Lặp lại liên tục
         }
@@ -1109,19 +1025,11 @@
             // Restore for UI elements
             ctx.restore();
             
-            function getBulletColor(type) {
-                if (type === 'explosive') return 'orange';
-                if (type === 'armorPiercing') return 'purple';
-                return 'yellow';
-            }
-
             // 4. VẮN ĐẠN (with camera in world space)
             ctx.save();
             ctx.translate(-camera.x, -camera.y);
-            
+            ctx.fillStyle = '#ff0';
             latestServerData.bullets.forEach(b => {
-                ctx.fillStyle = getBulletColor(b.type);
-                
                 // Only draw visible bullets
                 if (b.x >= camera.x - 10 && b.x <= camera.x + 810 && 
                     b.y >= camera.y - 10 && b.y <= camera.y + 610) {
@@ -1136,8 +1044,6 @@
             if (showMinimap && latestServerData) {
                 drawMinimap();
             }
-
-            // [DEBUG OVERLAY] - Removed for production
 
             // 6. REMOVED CANVAS PING DRAWING (Moved to HTML UI)
         }

@@ -14,64 +14,44 @@ services:
       - MONGO_URI=${MONGO_URI}
     volumes:
       - ./services/auth:/app
-      - /app/node_modules
     restart: unless-stopped
     networks:
       - tank-network
 
-  # Game Service Node 1
-  game-service-1:
+  # Game Service (Scalable)
+  # Sử dụng: docker-compose up -d --scale game-service=3
+  game-service:
     build:
       context: ./services/game
       dockerfile: Dockerfile
-    container_name: tank-game-1
+    # Không dùng container_name để cho phép scale nhiều instances
     ports:
-      - "6001:6000" # Mở port cho Monitor Dashboard
+      - "6000-6020:6000" # Port range cho nhiều instances
     environment:
       - PORT=6000
       - MONGO_URI=${MONGO_URI}
+      - REDIS_URL=redis://redis:6379
+      - PUBLIC_URL=http://localhost
     volumes:
       - ./services/game:/app
-      - /app/node_modules
     restart: unless-stopped
     networks:
       - tank-network
+    depends_on:
+      - redis
 
-  # Game Service Node 2
-  game-service-2:
-    build:
-      context: ./services/game
-      dockerfile: Dockerfile
-    container_name: tank-game-2
+  # Redis - Shared state for multi-node cluster
+  redis:
+    image: redis:alpine
+    container_name: tank-redis
     ports:
-      - "6002:6000" # Mở port cho Monitor Dashboard
-    environment:
-      - PORT=6000
-      - MONGO_URI=${MONGO_URI}
-    volumes:
-      - ./services/game:/app
-      - /app/node_modules
-    restart: unless-stopped
+      - "6379:6379"
     networks:
       - tank-network
-
-  # Game Service Node 3
-  game-service-3:
-    build:
-      context: ./services/game
-      dockerfile: Dockerfile
-    container_name: tank-game-3
-    ports:
-      - "6003:6000" # Mở port cho Monitor Dashboard
-    environment:
-      - PORT=6000
-      - MONGO_URI=${MONGO_URI}
     volumes:
-      - ./services/game:/app
-      - /app/node_modules
+      - redis-data:/data
     restart: unless-stopped
-    networks:
-      - tank-network
+    command: redis-server --appendonly yes
 
   # Nginx Load Balancer
   nginx:
@@ -84,13 +64,69 @@ services:
       - ./services/monitor:/usr/share/nginx/html/monitor:ro
     depends_on:
       - auth-service
-      - game-service-1
-      - game-service-2
-      - game-service-3
+      - game-service
+      - redis
     restart: unless-stopped
     networks:
       - tank-network
 
+  # Prometheus - Metrics collection
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: tank-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./services/monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    networks:
+      - tank-network
+    restart: unless-stopped
+
+  # Redis Exporter - Redis metrics for Prometheus
+  redis-exporter:
+    image: oliver006/redis_exporter:latest
+    container_name: tank-redis-exporter
+    ports:
+      - "9121:9121"
+    environment:
+      - REDIS_ADDR=redis:6379
+    networks:
+      - tank-network
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  # Grafana - Metrics visualization
+  grafana:
+    image: grafana/grafana:latest
+    container_name: tank-grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./services/monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./services/monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    networks:
+      - tank-network
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
 networks:
   tank-network:
     driver: bridge
+
+volumes:
+  redis-data:
+  prometheus-data:
+  grafana-data:
+
+

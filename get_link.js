@@ -24,10 +24,10 @@ const req = http.request(options, (res) => {
                 console.log('\n    ' + publicUrl);
                 console.log('\n==================================================\n');
             } else {
-                console.log('⚠️  Chua tim thay tunnel nao. Ban da chay "ngrok http 80" chua?');
+                console.log('  Chua tim thay tunnel nao. Ban da chay "ngrok http 80" chua?');
             }
         } catch (e) {
-            console.log('⚠️  Loi doc du lieu tu Ngrok:', e.message);
+            console.log('  Loi doc du lieu tu Ngrok:', e.message);
         }
     });
 });

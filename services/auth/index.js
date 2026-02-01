@@ -9,14 +9,15 @@ const PORT = process.env.PORT || 5000;
 
 app.use(cors());
 app.use(bodyParser.json());
+app.use(express.static(path.join(__dirname, 'public'))); // Serve static files
 
 // --- KẾT NỐI DATABASE (MONGODB) ---
 const MONGO_URI = process.env.MONGO_URI || process.env.Mongo_url || "mongodb+srv://concathu119_db_user:TnfICaLIi059MGlR@long.1vyupsh.mongodb.net/?appName=long";
 let useDB = false;
 
 mongoose.connect(MONGO_URI)
-    .then(() => { console.log("[Auth] Connected to MongoDB"); useDB = true; })
-    .catch(err => console.log("[Auth] DB Error:", err));
+    .then(() => { console.log("✅ [Auth] Connected to MongoDB"); useDB = true; })
+    .catch(err => console.log("❌ [Auth] DB Error:", err));
 
 // --- USER MODEL ---
 const UserSchema = new mongoose.Schema({
@@ -24,18 +25,13 @@ const UserSchema = new mongoose.Schema({
     password: { type: String, required: true },
     money: { type: Number, default: 0 },
     skins: { type: [String], default: ['tank'] },
-    currentSkin: { type: String, default: 'tank' },
-    isOnline: { type: Boolean, default: false },
-    lastHeartbeat: { type: Date, default: Date.now },
-    currentSessionId: { type: String, default: '' }
+    currentSkin: { type: String, default: 'tank' }
 });
 const UserModel = mongoose.model('User', UserSchema);
 
 // --- STATIC ASSETS (Frontend) ---
 // Auth service will serve the website files
-// --- STATIC ASSETS (Frontend) ---
-// Auth service will serve the website files locally
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, '../../public')));
 // Note: We moved public folder inside auth service for simpler deployment
 
 // --- DATABASE HELPERS ---
@@ -43,68 +39,6 @@ async function findUser(username) {
     if (useDB) return await UserModel.findOne({ username });
     return null;
 }
-
-// --- MIDDLEWARE LOGGING (Chương 8: Log Management) ---
-const logBuffer = [];
-function addLog(msg) {
-    const logEntry = `[${new Date().toISOString()}] ${msg}`;
-    logBuffer.push(logEntry);
-    if (logBuffer.length > 50) logBuffer.shift();
-    console.log(logEntry);
-}
-
-app.use((req, res, next) => {
-    // BO LO QUA CAC REQUEST TU MONITOR (Cho no do spam)
-    if (req.url !== '/health' && req.url !== '/api/logs') {
-        addLog(`${req.method} ${req.url}`);
-    }
-    next();
-});
-
-// API Get Logs
-app.get('/api/logs', (req, res) => {
-    res.header("Access-Control-Allow-Origin", "*");
-    res.json(logBuffer);
-});
-
-// --- HEALTH CHECK (Chương 8: Health Monitoring) ---
-app.get('/health', (req, res) => {
-    res.header("Access-Control-Allow-Origin", "*");
-    res.json({
-        status: 'UP',
-        service: 'Auth Service',
-        uptime: process.uptime(),
-        timestamp: Date.now(),
-        dbConnection: useDB ? 'Connected' : 'Disconnected'
-    });
-});
-
-// --- TASK SCHEDULING (CRON JOB) ---
-function startCronJobs() {
-    setInterval(() => {
-        const now = new Date();
-        const timeString = `${now.getHours()}:${now.getMinutes()}:${now.getSeconds()}`;
-
-        // 1. Daily Reset (00:00)
-        if (now.getHours() === 0 && now.getMinutes() === 0 && now.getSeconds() === 0) {
-            console.log(`[CRON] ${timeString} - Reseting Daily Leaderboard...`);
-            // await UserModel.updateMany({}, { dailyScore: 0 });
-        }
-
-        // 2. Weekly Reset (Monday 00:00)
-        if (now.getDay() === 1 && now.getHours() === 0 && now.getMinutes() === 0 && now.getSeconds() === 0) {
-            console.log(`[CRON] ${timeString} - Reseting Weekly Leaderboard...`);
-        }
-
-        // 3. Monthly Reset (1st Day 00:00)
-        if (now.getDate() === 1 && now.getHours() === 0 && now.getMinutes() === 0 && now.getSeconds() === 0) {
-            console.log(`[CRON] ${timeString} - Reseting Monthly Leaderboard...`);
-        }
-
-    }, 1000); // Check every second (Simple implementation)
-    console.log("[Auth] Cron Jobs started...");
-}
-startCronJobs();
 
 // --- API ENDPOINTS ---
 
@@ -148,17 +82,15 @@ app.post('/api/login', async (req, res) => {
             'tank5': { name: "Maus Tank", price: 2500, speed: 3, hp: 300, damage: 35, recoil: 10, reloadTime: 700 }
         };
 
-        // DYNAMIC URL DETECTION (Hỗ trợ cả Localhost, DuckDNS, Cloudflare)
-        // Nếu chạy qua NGINX/Cloudflare, header Host sẽ là domain.
-        const protocol = req.headers['x-forwarded-proto'] || 'http';
-        const host = req.get('host'); // e.g. "localhost" or "tank-game.duckdns.org"
-        const gameUrl = `${protocol}://${host}`;
+        // Docker environment: return empty to use same origin (nginx proxy)
+        // Local development: return localhost:3000
+        const urlToSend = process.env.GAME_SERVER_URL || "";
+        console.log(`[AUTH] Sending gameServerUrl to client: ${urlToSend || '(same origin)'}`);
 
         res.json({
             user: userData,
             config: TANK_CONFIG,
-            // Client sẽ connect socket vào chính domain này (qua NGINX location /socket.io/)
-            gameServerUrl: gameUrl
+            gameServerUrl: urlToSend
         });
     } catch (e) {
         res.status(500).json({ error: 'Server error' });
@@ -212,36 +144,53 @@ app.post('/api/shop/select', async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// --- LEADERBOARD API ---
+// 5. LEADERBOARD (Get Top Players)
 app.get('/api/leaderboard', async (req, res) => {
     try {
-        let users = [];
-        if (useDB) {
-            users = await UserModel.find().sort({ money: -1 }).limit(10);
-        } else {
-            // RAM Fallback: not really scalable but consistent with current design
-            users = [];
+        if (!useDB) {
+            return res.status(503).json({ error: 'Database not ready' });
         }
-        res.json(users);
-    } catch (e) {
-        res.status(500).json({ error: 'Server error' });
-    }
-});
 
-// --- GRACEFUL SHUTDOWN (Chương 3: Quản lý tiến trình) ---
-process.on('SIGINT', async () => {
-    console.log('\n[AUTH SERVICE] Shutting down gracefully...');
-    if (useDB) await mongoose.connection.close();
-    process.exit(0);
+        // Fetch top 10 users sorted by money (descending)
+        const topUsers = await UserModel
+            .find()
+            .select('username money skins currentSkin -_id') // Exclude password and _id
+            .sort({ money: -1 })
+            .limit(10);
+
+        res.json(topUsers);
+    } catch (e) {
+        console.error('[Leaderboard] Error:', e);
+        res.status(500).json({ error: 'Failed to load leaderboard' });
+    }
 });
 
 // Root: Serve index.html
 app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'public', 'index.html'));
-    // Note: Served from local services/auth/public/index.html
+    res.sendFile(path.join(__dirname, '../../index.html'));
+    // Note: We need to ensure index.html can be found relative to here
+});
+
+// Health Check
+app.get('/health', (req, res) => {
+    res.json({
+        status: 'UP',
+        service: 'Auth Service',
+        uptime: process.uptime()
+    });
+});
+
+// Prometheus Metrics Endpoint
+app.get('/metrics', async (req, res) => {
+    const { register } = require('./lib/prometheus');
+    try {
+        res.set('Content-Type', register.contentType);
+        res.end(await register.metrics());
+    } catch (err) {
+        res.status(500).end(err);
+    }
 });
 
 app.listen(PORT, () => {
-    addLog(`Auth Service started on port ${PORT}`);
     console.log(`[Auth Service] running on port ${PORT}`);
 });

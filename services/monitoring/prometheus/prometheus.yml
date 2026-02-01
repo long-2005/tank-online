@@ -1,0 +1,26 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Auth Service - Monitor login/register activity
+  - job_name: 'auth-service'
+    static_configs:
+      - targets: ['auth-service:5000']
+    metrics_path: '/metrics'
+    
+  # Game Service Nodes - Monitor players, rooms, queue
+  # Note: Static targets, sẽ có warning nếu số instances khác 3
+  # Để fully dynamic, cần Docker Swarm hoặc file-based service discovery
+  - job_name: 'game-nodes'
+    dns_sd_configs:
+      - names:
+          - 'game-service'
+        type: 'A'
+        port: 6000
+    metrics_path: '/metrics'
+    
+  # Redis Exporter - Monitor queue operations
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis-exporter:9121']
